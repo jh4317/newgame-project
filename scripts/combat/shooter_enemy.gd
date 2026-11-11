@@ -11,7 +11,9 @@ signal died(enemy: Node)
 enum Tier { BASIC, ELITE }
 
 const Projectile := preload("res://scripts/combat/projectile.gd")
-const BODY_COLOR := Color(0.16, 0.16, 0.18)
+const InkStack := preload("res://scripts/combat/ink_stack.gd")
+const BODY_COLOR := Color(0.6, 0.6, 0.64)   # 밝은 회색: 먹이 묻으면 검게 물드는 게 보이도록
+const INK_TINT := Color(0.03, 0.03, 0.03)
 
 @export var tier: Tier = Tier.BASIC        # add_child 전에 정한다
 @export var max_health := 4.0              # 반사탄 1발 = 2 → 하급은 패링 2번, 중급은 3번에 처치
@@ -38,6 +40,7 @@ var _eye: MeshInstance3D
 var _size := Vector3(1.2, 2.2, 1.2)
 var _body_mesh: MeshInstance3D
 var _punch := 0.0
+var ink: Node3D  ## 먹 수치 (ink_stack.gd)
 
 
 func body_height() -> float:
@@ -93,6 +96,11 @@ func _ready() -> void:
 		band.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(band)
 
+	ink = InkStack.new()
+	ink.body_height = _size.y
+	ink.body_size = _size
+	add_child(ink)
+
 	_eye = MeshInstance3D.new()
 	var em := SphereMesh.new()
 	em.radius = 0.22
@@ -114,6 +122,15 @@ func is_dead() -> bool:
 ## 플레이어의 반사탄 조준 보정에 쓰는 지점
 func aim_point() -> Vector3:
 	return global_position + Vector3.UP * 1.2
+
+
+## 먹 끌어당김에 붙잡혀 target 위치로 빨려 간다 (살짝 지나쳤다 멈춤)
+func pull_to(target: Vector3, duration := 0.3) -> void:
+	if _dead:
+		return
+	_flash = 0.08
+	var tw := create_tween()
+	tw.tween_property(self, "global_position", target, duration).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 ## 이번 공격으로 죽었으면 true
@@ -158,7 +175,8 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	_flash -= delta
-	_body_mat.albedo_color = Color(1, 1, 1) if _flash > 0.0 else BODY_COLOR
+	var tint := BODY_COLOR.lerp(INK_TINT, float(ink.call("ratio")) * 0.9)  # 먹이 쌓일수록 검게
+	_body_mat.albedo_color = Color(1, 1, 1) if _flash > 0.0 else tint
 	# 피격 움찔: 옆으로 부풀고 위아래로 눌렸다 돌아온다
 	_punch = move_toward(_punch, 0.0, 8.0 * delta)
 	_body_mesh.scale = Vector3(1.0 + 0.15 * _punch, 1.0 - 0.1 * _punch, 1.0 + 0.15 * _punch)
@@ -189,6 +207,7 @@ func _can_see_target() -> bool:
 
 func _die() -> void:
 	_dead = true
+	ink.call("reset")
 	remove_from_group("enemy")
 	visible = false
 	_col.set_deferred("disabled", true)

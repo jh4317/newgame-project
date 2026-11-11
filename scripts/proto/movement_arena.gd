@@ -21,6 +21,26 @@ const CombatFx := preload("res://scripts/systems/combat_fx.gd")
 const SpeedLines := preload("res://scripts/fx/speed_lines.gd")
 const HitEffects := preload("res://scripts/fx/hit_effects.gd")
 const ScreenFx := preload("res://scripts/fx/screen_fx.gd")
+const StyleMeter := preload("res://scripts/systems/style_meter.gd")
+
+## 먹 끌어당김 (먹이 가득 찬 적에게 반사탄 적중, GDD 3.8)
+const PULL_RADIUS := 14.0      # 이 거리 안의 다른 적을 끌어당긴다
+const PULL_GAP := 2.6          # 중심 적에게서 이만큼 떨어진 자리로
+const PULL_HEAL := 25.0
+const PULL_CHAIN_INK := 30.0   # 끌려온 적에게도 먹이 묻는다
+
+## 먹 스타일 점수 (GDD 5.2)
+const STYLE := {
+	"melee": ["베기", 40.0],
+	"finisher": ["마무리 베기", 70.0],
+	"wave": ["검기", 20.0],
+	"wave_big": ["큰 검기", 30.0],
+	"parry": ["패링", 120.0],
+	"reflect": ["반사탄", 80.0],
+	"burst": ["먹 폭발", 200.0],
+	"pull": ["먹 끌어당김", 300.0],
+	"kill": ["처치", 100.0],
+}
 
 const SPAWN := Vector3(0, 0.1, 22)
 ## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급)
@@ -36,8 +56,11 @@ var fx: CanvasLayer
 var speed_lines: CanvasLayer
 var hit_fx: Node3D
 var screen_fx: CanvasLayer
+var style: CanvasLayer
+var ink_pulls := 0
 var enemies: Array[Node] = []
 var kills := 0
+var ink_bursts := 0
 var _active_rig: Node3D
 
 var player: CharacterBody3D
@@ -53,6 +76,7 @@ var _mat_platform: StandardMaterial3D
 
 
 func _ready() -> void:
+	add_to_group("combat_events")
 	InputSetup.ensure_actions()
 	_build_environment()
 	_build_materials()
@@ -78,6 +102,8 @@ func _ready() -> void:
 	add_child(hit_fx)
 	screen_fx = ScreenFx.new()
 	add_child(screen_fx)
+	style = StyleMeter.new()
+	add_child(style)
 
 	for spot in ENEMY_SPOTS:
 		var e := ShooterEnemy.new()
@@ -97,8 +123,9 @@ func _ready() -> void:
 	player.dashed.connect(func(): _feedback(0.25, 8.0))
 	player.wall_jumped.connect(func(): _feedback(0.12, 0.0))
 	player.landed.connect(_on_landed)
-	player.damaged.connect(func(_amount: float): _feedback(0.3, 0.0))
+	player.damaged.connect(_on_player_damaged)
 	player.sword.hit_enemy.connect(_on_sword_hit)
+	player.sword.ink_burst.connect(_on_ink_burst)
 
 	_set_camera_mode(false)
 
@@ -124,6 +151,7 @@ func _on_sword_hit(enemy: Node, killed: bool, melee: bool, kind: String) -> void
 	var dir := pos - player.global_position
 	dir.y = 0.0
 	dir = dir.normalized() if dir.length() > 0.01 else Vector3(0, 0, -1)
+	_style(kind)
 	var sword: Node = player.get("sword")
 	match kind:
 		"finisher":
@@ -145,6 +173,81 @@ func _on_sword_hit(enemy: Node, killed: bool, melee: bool, kind: String) -> void
 		_feedback(0.08, 0.0)
 
 
+## 먹 폭발: 근접으로 쌓인 먹을 터뜨렸다 → 가장 큰 순간 중 하나로 연출
+func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
+	var base := (enemy as Node3D).global_position
+	var pos: Vector3 = enemy.call("aim_point")
+	hit_fx.call("ink_burst", pos, base, bonus)
+	ink_bursts += 1
+	_style("burst")
+	fx.call("hitstop", 0.07)
+	fx.call("impact_frame", "ink_burst", 2, false)
+	_big_moment(pos, 0.12, -7.0, 140.0)
+	_feedback(0.4, 0.0)
+
+
+func _on_player_damaged(_amount: float) -> void:
+	_feedback(0.3, 0.0)
+	style.call("on_damaged")  # 피격하면 스타일이 한 등급만큼 깎인다
+
+
+## 먹 스타일 점수 추가 (STYLE 표 기준). mul: 공중·슬라이드 처치 같은 보너스
+func _style(id: String, mul := 1.0, label_suffix := "") -> void:
+	if not STYLE.has(id):
+		return
+	var entry: Array = STYLE[id]
+	style.call("add", id, String(entry[0]) + label_suffix, float(entry[1]) * mul)
+
+
+## 반사탄이 적에게 맞았다 (projectile.gd → 그룹 "combat_events")
+func on_reflect_hit(enemy: Node, _killed: bool, ink_full: bool) -> void:
+	_style("reflect")
+	if ink_full:
+		_ink_pull(enemy)
+
+
+## 먹 끌어당김: 먹이 가득 찬 적을 중심으로 주변 적을 끌어모으고, 체력을 회복하고, 스타일 점수를 크게 얻는다.
+## 끌려온 적에게도 먹이 묻는다 → 모아 놓고 근접으로 한꺼번에 터뜨리는 흐름
+func _ink_pull(center_enemy: Node) -> void:
+	var center := (center_enemy as Node3D).global_position
+	var from_points := []
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if e == center_enemy:
+			continue
+		var n := e as Node3D
+		var flat := Vector3(n.global_position.x - center.x, 0.0, n.global_position.z - center.z)
+		if flat.length() > PULL_RADIUS or flat.length() < 0.1:
+			continue
+		from_points.append(n.global_position)
+		var target := center + flat.normalized() * PULL_GAP
+		target.y = _floor_y(target, center.y)
+		e.call("pull_to", target, 0.3)
+		var ink: Node = e.get("ink")
+		if ink:
+			ink.call("add", PULL_CHAIN_INK)
+	ink_pulls += 1
+	var heal := minf(PULL_HEAL, float(player.get("max_health")) - float(player.get("health")))
+	player.set("health", float(player.get("health")) + maxf(heal, 0.0))
+	hit_fx.call("ink_pull", center, from_points)
+	hit_fx.call("heal_text", player.global_position, PULL_HEAL)
+	_style("pull")
+	fx.call("hitstop", 0.06)
+	_big_moment(center + Vector3.UP * 1.2, 0.12, -6.0, 130.0)
+	_feedback(0.35, 0.0)
+
+
+## target 바로 아래 바닥 높이 (없으면 fallback)
+func _floor_y(target: Vector3, fallback: float) -> float:
+	var q := PhysicsRayQueryParameters3D.create(target + Vector3.UP * 3.0, target + Vector3.DOWN * 20.0)
+	var ex: Array[RID] = []
+	for e in get_tree().get_nodes_in_group("enemy"):
+		ex.append((e as CollisionObject3D).get_rid())
+	ex.append(player.get_rid())
+	q.exclude = ex
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	return fallback if hit.is_empty() else float((hit["position"] as Vector3).y)
+
+
 ## 큰 순간 연출: 화면을 가로지르는 붓터치 + 줌 블러 + 줌 펀치(시야를 확 당김)
 func _big_moment(world_pos: Vector3, blur: float, zoom: float, slash_width: float) -> void:
 	var cam := get_viewport().get_camera_3d()
@@ -162,6 +265,7 @@ func _on_parried(_projectile: Node) -> void:
 	fx.call("impact_frame", "parry", 2, true)
 	_feedback(0.35, 0.0)
 	hit_fx.call("parry_text", player.global_position)
+	_style("parry")
 	var cam := get_viewport().get_camera_3d()
 	var size := get_viewport().get_visible_rect().size
 	var px := cam.unproject_position(player.global_position + Vector3.UP) if cam else size * 0.5
@@ -172,6 +276,14 @@ func _on_parried(_projectile: Node) -> void:
 func _on_enemy_died(enemy: Node) -> void:
 	kills += 1
 	hud.set("kills", kills)
+	# 처치 보너스: 공중(벽·대시 포함) 처치 ×1.5, 슬라이드 중 처치 ×1.3
+	var st: String = player.call("state_name")
+	if st in ["공중", "벽 붙기", "대시"]:
+		_style("kill", 1.5, " (공중)")
+	elif st == "슬라이드":
+		_style("kill", 1.3, " (슬라이드)")
+	else:
+		_style("kill")
 	var epos := (enemy as Node3D).global_position
 	var elite: bool = enemy.call("is_elite")
 	hit_fx.call("enemy_killed", epos, enemy.call("body_height"), elite)

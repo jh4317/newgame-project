@@ -11,6 +11,8 @@ extends Node3D
 signal swung(combo_index: int)
 ## kind: "melee" / "finisher"(3타 근접) / "wave" / "wave_big"(3타 검기)
 signal hit_enemy(enemy: Node, killed: bool, melee: bool, kind: String)
+## 먹 폭발: 먹이 기준치 이상 쌓인 적을 근접으로 베어 추가 피해를 줬다
+signal ink_burst(enemy: Node, bonus: float, killed: bool)
 
 const SwordWave := preload("res://scripts/combat/sword_wave.gd")
 
@@ -25,6 +27,12 @@ const SwordWave := preload("res://scripts/combat/sword_wave.gd")
 @export var wave_range := 25.0
 @export var aim_assist_deg := 15.0      # 이 각도 안의 적(높이 차 포함)을 검기가 향한다
 @export var melee_kill_heal := 20.0
+
+@export_group("Ink")  ## 공격마다 적에게 쌓이는 먹 (ink_stack.gd)
+@export var ink_melee := 25.0
+@export var ink_finisher := 35.0
+@export var ink_wave := 20.0
+@export var ink_wave_big := 30.0
 
 var player: CharacterBody3D
 var combo := 0
@@ -135,9 +143,18 @@ func _melee_hits(finisher: bool, reach_mul: float) -> Array:
 		if flat.length() > 0.5 and aim.angle_to(flat.normalized()) > half:
 			continue
 		hit.append(e)
-		var killed: bool = e.call("take_damage", dmg)
+		# 먹이 기준치 이상이면 먼저 전부 터뜨려 추가 피해, 그 뒤 이번 베기의 먹을 새로 묻힌다
+		var ink: Node = e.get("ink")
+		var bonus := 0.0
+		if ink and bool(ink.call("is_ready")):
+			bonus = ink.call("consume")
+		var killed: bool = e.call("take_damage", dmg + bonus)
 		if killed:
 			player.set("health", minf(float(player.get("max_health")), float(player.get("health")) + melee_kill_heal))
+		elif ink:
+			ink.call("add", ink_finisher if finisher else ink_melee)
+		if bonus > 0.0:
+			ink_burst.emit(e, bonus, killed)
 		hit_enemy.emit(e, killed, true, "finisher" if finisher else "melee")
 	return hit
 
@@ -148,8 +165,16 @@ func _launch_wave(finisher: bool, already_hit: Array) -> void:
 	w.setup(origin, _assisted_direction(origin), wave_speed, wave_range,
 		wave_damage * (1.5 if finisher else 1.0), finisher, player, already_hit)
 	var kind := "wave_big" if finisher else "wave"
-	w.hit_enemy.connect(func(e: Node, killed: bool): hit_enemy.emit(e, killed, false, kind))
+	var ink_amount := ink_wave_big if finisher else ink_wave
+	w.hit_enemy.connect(_on_wave_hit.bind(kind, ink_amount))
 	player.get_parent().add_child(w)
+
+
+func _on_wave_hit(e: Node, killed: bool, kind: String, ink_amount: float) -> void:
+	var ink: Node = e.get("ink")
+	if ink and not killed:
+		ink.call("add", ink_amount)  # 검기는 먹을 묻히기만 한다 (터뜨리는 건 근접)
+	hit_enemy.emit(e, killed, false, kind)
 
 
 func _aim() -> Vector3:

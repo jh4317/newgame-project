@@ -299,6 +299,12 @@ func _try_parry() -> void:
 		if flat.length() > 0.2 and facing.angle_to(flat.normalized()) > half_angle:
 			continue
 		p.call("reflect", _reflect_direction(p.global_position), parry_speed_mul, parry_damage_mul)
+		# 패링하면 탄을 쏜 적의 먹이 즉시 5칸(가득) 찬다 → 바로 다가가 근접으로 터뜨릴 수 있다 (GDD 3.8)
+		var shooter: Node = p.get("shooter")
+		if is_instance_valid(shooter) and not bool(shooter.call("is_dead")):
+			var ink: Node = shooter.get("ink")
+			if ink:
+				ink.call("add", float(ink.get("max_ink")))
 		_parry_hit = true
 		parry_count += 1
 		health = minf(max_health, health + parry_heal)

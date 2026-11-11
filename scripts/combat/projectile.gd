@@ -86,7 +86,13 @@ func _on_body_entered(body: Node) -> void:
 		if not reflected:
 			return  # 적끼리는 맞지 않는다
 		get_tree().call_group("hit_fx", "reflect_hit", global_position, velocity.normalized(), damage)
-		body.call("take_damage", damage)
+		var ink: Node = body.get("ink")
+		# 먹이 가득 찬 적에게 반사탄이 맞으면 '먹 끌어당김' (GDD 3.8) — 판정은 맞기 전 상태로
+		var ink_full := ink != null and float(ink.get("ink")) >= float(ink.get("max_ink"))
+		var killed: bool = body.call("take_damage", damage)
+		if ink and not killed:
+			ink.call("add", 30.0)  # 되받아친 탄도 먹을 묻힌다
+		get_tree().call_group("combat_events", "on_reflect_hit", body, killed, ink_full)
 		queue_free()
 	else:
 		queue_free()  # 벽·바닥

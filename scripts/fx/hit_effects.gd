@@ -60,6 +60,33 @@ func enemy_killed(pos: Vector3, size: float, elite: bool) -> void:
 	_ink_splat(pos, 9 if elite else 6, 1.6 if elite else 1.2)
 
 
+## 먹 폭발: 쌓인 먹이 한꺼번에 터진다. 검은 먹방울이 사방으로 튀고, 바닥에 큰 먹 자국,
+## 흰 섬광과 고리, "먹 폭발" 문구와 추가 피해 숫자
+func ink_burst(pos: Vector3, base_pos: Vector3, bonus: float) -> void:
+	_ink_droplets(pos, 40, 13.0)
+	_ink_splat(base_pos, 10, 1.8)
+	_flash(pos, 2.6, 0.16)
+	_ring(base_pos + Vector3.UP * 0.1, 5.5, 0.35)
+	_brush(pos, Vector3(1, 0, 0), 6.0, 0.9, 0.3, 0.0)
+	_pop_label(pos + Vector3.UP * 1.6, "먹 폭발", 110, 0.8)
+	_pop_label(pos + Vector3(0.0, 0.6, 0.0), "+" + str(int(round(bonus))), 150, 0.8)
+
+
+## 먹 끌어당김: 중심으로 검은 고리가 오므라들고, 끌려오는 적마다 먹 사슬이 이어졌다 끊긴다
+func ink_pull(center: Vector3, from_points: Array) -> void:
+	_implode(center + Vector3.UP * 1.2, 9.0, 0.28)
+	_flash(center + Vector3.UP * 1.2, 2.2, 0.18)
+	for p in from_points:
+		_tether(center + Vector3.UP * 1.2, (p as Vector3) + Vector3.UP * 1.2, 0.4)
+	_ink_droplets(center + Vector3.UP * 1.2, 24, 9.0)
+	_pop_label(center + Vector3.UP * 3.4, "먹 끌어당김", 100, 0.9)
+
+
+## 회복 표시 (플레이어 머리 위)
+func heal_text(pos: Vector3, amount: float) -> void:
+	_pop_label(pos + Vector3(0.6, 2.0, 0.0), "+%d 회복" % int(round(amount)), 80, 0.8)
+
+
 ## 패링 성공 문구 (플레이어 머리 위)
 func parry_text(pos: Vector3) -> void:
 	_pop_label(pos + Vector3.UP * 2.4, "PARRY", 120, 0.7)
@@ -295,6 +322,91 @@ func _smoke(pos: Vector3, count: int, life: float) -> void:
 	p.scale_amount_min = 0.8
 	p.scale_amount_max = 1.8
 	_emit_once(p, pos, life)
+
+
+## 오므라드는 고리: 넓은 검은 고리가 중심으로 확 빨려 든다 (끌어당김)
+func _implode(pos: Vector3, radius: float, life: float) -> void:
+	for i in 2:
+		var m := MeshInstance3D.new()
+		var tm := TorusMesh.new()
+		tm.inner_radius = 0.88
+		tm.outer_radius = 1.0
+		tm.rings = 32
+		tm.ring_segments = 4
+		m.mesh = tm
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(INK.r, INK.g, INK.b, 0.0)
+		m.material_override = mat
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(m)
+		m.global_position = pos
+		var r := radius * (1.0 - 0.3 * i)
+		m.scale = Vector3(r, 1.0, r)
+		var tw := m.create_tween()
+		tw.tween_interval(0.05 * i)
+		tw.tween_property(mat, "albedo_color:a", 0.9, 0.04)
+		tw.tween_property(m, "scale", Vector3(0.3, 1.0, 0.3), life).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+		tw.tween_callback(m.queue_free)
+
+
+## 먹 사슬: 두 점을 잇는 굵은 검은 줄(가운데 흰 심)이 잠깐 이어졌다 가늘어지며 끊긴다
+func _tether(a: Vector3, b: Vector3, life: float) -> void:
+	var length := a.distance_to(b)
+	if length < 0.1:
+		return
+	var root := Node3D.new()
+	add_child(root)
+	root.global_position = (a + b) * 0.5
+	root.look_at(b, Vector3.UP if absf((b - a).normalized().y) < 0.99 else Vector3.RIGHT)
+	for layer in 2:
+		var ink := layer == 0
+		var m := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.22, 0.22, length) if ink else Vector3(0.06, 0.06, length)
+		m.mesh = bm
+		var mat := _glow_mat(4.0) if not ink else StandardMaterial3D.new()
+		if ink:
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			mat.albedo_color = INK
+		mat.no_depth_test = true
+		mat.render_priority = 1 if ink else 2
+		m.material_override = mat
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(m)
+	var tw := root.create_tween()
+	tw.tween_interval(life * 0.4)
+	tw.tween_property(root, "scale", Vector3(0.05, 0.05, 1.0), life * 0.6).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_callback(root.queue_free)
+
+
+## 먹방울: 검은 방울이 사방으로 튀었다가 떨어지며 작아진다
+func _ink_droplets(pos: Vector3, count: int, speed: float) -> void:
+	var p := CPUParticles3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.16
+	sm.height = 0.32
+	sm.radial_segments = 6
+	sm.rings = 3
+	p.mesh = sm
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = INK
+	p.material_override = mat
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.amount = count
+	p.lifetime = 0.7
+	p.direction = Vector3.UP
+	p.spread = 100.0
+	p.initial_velocity_min = speed * 0.4
+	p.initial_velocity_max = speed
+	p.gravity = Vector3(0, -24, 0)
+	p.scale_amount_min = 0.6
+	p.scale_amount_max = 2.0
+	p.scale_amount_curve = _shrink_curve(0.5)
+	_emit_once(p, pos, 0.7)
 
 
 ## 처치 파편: 회색·흰색 로우폴리 조각이 사방으로 튀고 떨어진다
