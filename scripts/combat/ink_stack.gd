@@ -15,9 +15,9 @@ signal changed(ink: float)
 @export var decay_delay := 3.0         # 마지막으로 먹이 묻은 뒤 이 시간이 지나면
 @export var decay_rate := 20.0         # 초당 이만큼 마른다
 @export var burst_min_damage := 40.0   # 기준치에서 터뜨릴 때 추가 피해 (적 체력 2칸)
-@export var burst_max_damage := 80.0   # 가득(100)일 때 추가 피해 (적 체력 4칸)
+@export var burst_max_damage := 80.0   # 가득(max_ink)일 때 추가 피해 (하급 100 → 체력 4칸)
 
-const PIPS := 5
+const PIP_SIZE := 20.0  ## 먹방울 1칸 = 먹 20. 칸 수는 max_ink에 따라 정해진다 (하급 5칸, 중급 8칸)
 const INK := Color(0.02, 0.02, 0.02)
 
 var ink := 0.0
@@ -84,8 +84,8 @@ func _process(delta: float) -> void:
 	# 머리 위 먹방울은 적의 회전과 상관없이 화면 가로로 늘어선다
 	var base := get_parent() as Node3D
 	if base:
-		for i in PIPS:
-			_pips[i].global_position = base.global_position + Vector3((i - 2) * 0.34, body_height + 0.75, 0.0)
+		for i in _pips.size():
+			_pips[i].global_position = base.global_position + Vector3((i - (_pips.size() - 1) * 0.5) * 0.34, body_height + 0.75, 0.0)
 		_ring.global_position = base.global_position + Vector3.UP * 0.05
 	if is_ready():
 		_t += delta
@@ -97,8 +97,8 @@ func _process(delta: float) -> void:
 func _refresh() -> void:
 	if _pips.is_empty():
 		return
-	var filled := int(floor(ink / (max_ink / PIPS) + 0.001))
-	for i in PIPS:
+	var filled := int(floor(ink / PIP_SIZE + 0.001))
+	for i in _pips.size():
 		var full := i < filled
 		_pips[i].material_override = _pip_full_mat if full else _pip_empty_mat
 		_pips[i].visible = ink > 0.0
@@ -253,7 +253,7 @@ func _build_visuals() -> void:
 	_pip_empty_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_pip_empty_mat.no_depth_test = true
 	_pip_empty_mat.render_priority = 2
-	for i in PIPS:
+	for i in maxi(1, roundi(max_ink / PIP_SIZE)):
 		var m := MeshInstance3D.new()
 		var sm := SphereMesh.new()
 		sm.radius = 0.14

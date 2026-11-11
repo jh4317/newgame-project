@@ -7,6 +7,7 @@ extends CharacterBody3D
 ## 바닥에 서 있는 동안에만 회복한다(공중에서는 회복 없음).
 
 const Sword := preload("res://scripts/combat/sword.gd")
+const InkTrail := preload("res://scripts/combat/ink_trail.gd")
 
 signal respawned
 ## source: 되받아친 투사체, 또는 근접 패링으로 튕겨 낸 적
@@ -78,6 +79,7 @@ enum State { GROUND, SLIDE, AIR, WALL, DASH }
 @export var afterimage_speed := 17.0     # 이 속도 이상(또는 대시 중)이면 잔상
 @export var afterimage_interval := 0.035
 @export var afterimage_life := 0.25
+@export var slide_ink_spacing := 0.7    # 슬라이드 중 이 거리마다 바닥에 먹 자국을 남긴다 (m)
 
 const CAPSULE_RADIUS := 0.4
 const CAPSULE_HEIGHT := 1.8
@@ -117,6 +119,11 @@ var _spawn_point := Vector3.ZERO
 var _visual: Node3D
 var _shadow: MeshInstance3D
 var _dots: Array[MeshInstance3D] = []
+var _ink_trail_dist := 0.0
+var _ink_trail_last := Vector3.ZERO
+var _stroke_active := false
+## 슬라이드 먹 획과 먹 도형 (ink_trail.gd). 아레나에 형제 노드로 붙는다
+var ink_trail: Node3D
 
 
 func _ready() -> void:
@@ -130,6 +137,9 @@ func _ready() -> void:
 	sword = Sword.new()
 	sword.player = self
 	_visual.add_child(sword)
+	ink_trail = InkTrail.new()
+	ink_trail.player = self
+	get_parent().add_child.call_deferred(ink_trail)
 
 
 func jump_velocity() -> float:
@@ -205,6 +215,10 @@ func respawn() -> void:
 	stamina = stamina_max
 	health = max_health
 	recoverable = 0.0
+	if ink_trail:
+		ink_trail.call("end_stroke")
+	_stroke_active = false
+	bhop_chain = 0
 	_dash_left = 0.0
 	_invuln_left = 0.0
 	_parry_left = 0.0
@@ -454,7 +468,11 @@ func _slide_move(hvel: Vector3, input_dir: Vector3, delta: float) -> Vector3:
 		var max_step := deg_to_rad(slide_turn_deg) * delta
 		_slide_dir = _slide_dir.rotated(Vector3.UP, clampf(angle, -max_step, max_step))
 	# 감속 없음: 슬라이드 속도 아래로는 떨어지지 않는다. 그보다 빠르면 천천히 맞춘다.
-	var speed := maxf(slide_speed, move_toward(hvel.length(), slide_speed, slide_overspeed_decay * delta))
+	# 필 등급 이상에서 자기 먹 획 위를 지나면 기준 속도가 오른다 (ink_trail.gd)
+	var base := slide_speed
+	if ink_trail:
+		base += float(ink_trail.call("trail_speed_bonus", global_position))
+	var speed := maxf(base, move_toward(hvel.length(), base, slide_overspeed_decay * delta))
 	return _slide_dir * speed
 
 
@@ -600,6 +618,7 @@ func _update_visual(delta: float, input_dir: Vector3) -> void:
 		_shadow.visible = true
 		_shadow.global_position = ground + Vector3.UP * 0.02
 		_shadow.scale = Vector3(s, 1.0, s)
+		_update_ink_trail(ground, height)
 
 	for i in _dots.size():
 		var dot := _dots[i]
@@ -633,6 +652,38 @@ func _spawn_afterimage() -> void:
 	var tw := ghost.create_tween()
 	tw.tween_property(m, "albedo_color:a", 0.0, afterimage_life)
 	tw.tween_callback(ghost.queue_free)
+
+
+## 슬라이드 먹 획 (ink_trail.gd):
+## - 슬라이드하면 획이 시작된다. 슬라이드 중과 거기서 이어진 공중 구간(슬라이드 점프·버니합·대시)에서
+##   slide_ink_spacing마다 캐릭터 발밑에 자국을 찍는다 (공중에서는 그 높이에 떠 있다)
+## - 바닥에서 슬라이드 없이 버니합 판정 시간보다 오래 머물면 획이 끊긴다
+## - 자국은 보통 잠시 뒤 옅어지고, 버니합을 이어 가는 동안에만 획 전체가 유지된다
+func _update_ink_trail(ground: Vector3, _height: float) -> void:
+	if ink_trail == null:
+		return
+	ink_trail.set("hold", bhop_chain > 0)
+	if state == State.SLIDE:
+		_stroke_active = true
+	elif is_on_floor() and _time_on_floor > bhop_window:
+		if _stroke_active:
+			ink_trail.call("break_stroke")
+		_stroke_active = false
+	elif state == State.WALL:
+		if _stroke_active:
+			ink_trail.call("break_stroke")  # 벽에 붙으면 획이 끊긴다 (발밑이 벽 아래라 어색함)
+		_stroke_active = false
+	# 먹은 캐릭터 발밑에 생긴다: 바닥에서는 바닥 위, 공중에서는 그 높이에 떠 있는 획
+	var feet := ground if is_on_floor() else global_position
+	if _stroke_active:
+		_ink_trail_dist += Vector2(feet.x - _ink_trail_last.x, feet.z - _ink_trail_last.z).length()
+		if _ink_trail_dist >= slide_ink_spacing:
+			_ink_trail_dist = 0.0
+			var dir := Vector3(velocity.x, 0.0, velocity.z)
+			ink_trail.call("stamp", feet, dir.normalized() if dir.length() > 0.1 else _slide_dir)
+	else:
+		_ink_trail_dist = slide_ink_spacing  # 다시 미끄러지자마자 첫 자국이 찍히게
+	_ink_trail_last = feet
 
 
 ## -Z 방향을 중심으로 펼쳐진 수평 부채꼴 메시

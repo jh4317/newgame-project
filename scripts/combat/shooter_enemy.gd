@@ -14,16 +14,21 @@ const Projectile := preload("res://scripts/combat/projectile.gd")
 const InkStack := preload("res://scripts/combat/ink_stack.gd")
 const BODY_COLOR := Color(0.6, 0.6, 0.64)   # 밝은 회색: 먹이 묻으면 검게 물드는 게 보이도록
 const INK_TINT := Color(0.03, 0.03, 0.03)
+const ELITE_MAX_INK := 160.0     # 중급 먹 한계 (하급 100)
+const ELITE_BURST_MAX := 120.0   # 중급이 가득(160)일 때 먹 폭발 추가 피해 (체력 6칸)
 
 @export var tier: Tier = Tier.BASIC        # add_child 전에 정한다
 @export var max_health := 4.0              # 반사탄 1발 = 2 → 하급은 패링 2번, 중급은 3번에 처치
 @export var fire_interval := 1.8
 @export var telegraph_time := 0.45         # GDD 6.1: 예고는 0.3초 이상
-@export var projectile_speed := 16.8       # 12 m/s에서 40% 상향
+@export var projectile_speed := 50.4       # 16.8 m/s에서 3배. 반사탄은 ×1.5 = 75.6 m/s
 @export var projectile_damage := 20.0
 @export var unparryable_every := 3         # 중급만: N발마다 1발은 패링 불가 탄
 @export var attack_range := 35.0
 @export var respawn_time := 4.0
+## 예측 사격: 플레이어가 이동할 곳을 겨냥한다. 0 = 지금 위치, 1 = 등속 이동을 가정한 정확한 요격점.
+## 하급은 덜 정확하게 예측한다. 방향을 바꾸면 빗나간다 → '멈추지 말고 꺾어라'
+@export var lead_accuracy := 0.6
 
 var target: Node3D
 var health := 4.0
@@ -56,6 +61,7 @@ func _ready() -> void:
 	if is_elite():
 		_size = Vector3(1.6, 2.8, 1.6)
 		max_health = 6.0
+		lead_accuracy = 1.0
 	else:
 		unparryable_every = 0  # 하급은 패링 불가 공격을 쓰지 않는다
 	health = max_health
@@ -97,6 +103,9 @@ func _ready() -> void:
 		add_child(band)
 
 	ink = InkStack.new()
+	if is_elite():
+		ink.max_ink = ELITE_MAX_INK            # 먹방울 8칸: 더 쌓아 더 크게 터뜨린다
+		ink.burst_max_damage = ELITE_BURST_MAX
 	ink.body_height = _size.y
 	ink.body_size = _size
 	add_child(ink)
@@ -188,10 +197,22 @@ func _fire() -> void:
 	_set_eye(Color(0.5, 0.5, 0.5), 0.3)
 	_eye.scale = Vector3.ONE
 	var muzzle := global_position + Vector3.UP * (_size.y - 0.6) - global_transform.basis.z * (_size.z * 0.5 + 0.4)
-	var aim := target.global_position + Vector3.UP * 1.0 - muzzle
+	var aim := predict_target(muzzle) - muzzle
 	var p := Projectile.new()
 	p.setup(muzzle, aim.normalized() * projectile_speed, projectile_damage, not _next_unparryable, self)
 	get_parent().add_child(p)
+
+
+## 탄이 날아가는 동안 플레이어가 수평으로 등속 이동한다고 보고 요격점을 구한다 (두 번 반복해 근사)
+func predict_target(from: Vector3) -> Vector3:
+	var aim_at := target.global_position + Vector3.UP * 1.0
+	var v: Vector3 = target.get("velocity") if "velocity" in target else Vector3.ZERO
+	v.y = 0.0
+	var predicted := aim_at
+	for i in 2:
+		var t := from.distance_to(predicted) / projectile_speed
+		predicted = aim_at + v * t * lead_accuracy
+	return predicted
 
 
 func _can_see_target() -> bool:

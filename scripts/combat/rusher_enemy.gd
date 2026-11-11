@@ -20,6 +20,8 @@ const InkStack := preload("res://scripts/combat/ink_stack.gd")
 const BODY_COLOR := Color(0.6, 0.6, 0.64)
 const INK_TINT := Color(0.03, 0.03, 0.03)
 const WARN_RED := Color(1.0, 0.12, 0.1)
+const ELITE_MAX_INK := 160.0     # 중급 먹 한계 (하급 100)
+const ELITE_BURST_MAX := 120.0   # 중급이 가득(160)일 때 먹 폭발 추가 피해 (체력 6칸)
 
 @export var tier: Tier = Tier.BASIC        # add_child 전에 정한다
 @export var max_health := 4.0              # 근접 베기 1번 = 2칸
@@ -38,6 +40,9 @@ const WARN_RED := Color(1.0, 0.12, 0.1)
 @export var parry_knockback := 7.0
 @export var unparryable_every := 2         # 중급만: N번째 돌진마다 패링 불가
 @export var respawn_time := 4.0
+## 예측 돌진: 방향을 고정하는 순간, 플레이어가 돌진이 닿을 때쯤 있을 곳을 겨냥한다.
+## 0 = 지금 위치, 1 = 등속 이동을 가정한 정확한 예측. 하급은 덜 정확하다
+@export var lead_accuracy := 0.6
 
 var target: Node3D
 var health := 4.0
@@ -96,6 +101,7 @@ func _ready() -> void:
 	if is_elite():
 		_size = Vector3(1.9, 1.9, 1.6)
 		max_health = 6.0
+		lead_accuracy = 1.0
 	else:
 		unparryable_every = 0  # 하급은 패링 불가 공격을 쓰지 않는다
 	health = max_health
@@ -113,6 +119,9 @@ func _ready() -> void:
 	_build_visuals()
 
 	ink = InkStack.new()
+	if is_elite():
+		ink.max_ink = ELITE_MAX_INK            # 먹방울 8칸: 더 쌓아 더 크게 터뜨린다
+		ink.burst_max_damage = ELITE_BURST_MAX
 	ink.body_height = _size.y
 	ink.body_size = _size
 	add_child(ink)
@@ -189,8 +198,9 @@ func _physics_process(delta: float) -> void:
 			hvel = hvel.move_toward(Vector3.ZERO, 60.0 * delta)
 			# 예고 초반에는 계속 조준하다가, 마지막 40%는 방향을 고정해 읽고 피할 수 있게 한다
 			if _state_time < telegraph_time * 0.6 and to_target.length() > 0.1:
-				_charge_dir = to_target.normalized()
-				_face(to_target, delta * 3.0)
+				var to_pred := _predicted_offset()
+				_charge_dir = to_pred.normalized() if to_pred.length() > 0.1 else to_target.normalized()
+				_face(_charge_dir, delta * 3.0)
 			_update_telegraph()
 			if _state_time >= telegraph_time:
 				_begin_charge()
@@ -276,6 +286,21 @@ func _check_charge_hit() -> void:
 	_hit_done = true
 	target.call("take_damage", charge_damage)
 	_end_charge()
+
+
+## 돌진이 닿을 때쯤 플레이어가 있을 곳까지의 수평 벡터.
+## 걸리는 시간 = 남은 예고 시간 + 거리 / 돌진 속도 (두 번 반복해 근사). 돌진 거리 밖은 잘라 낸다
+func _predicted_offset() -> Vector3:
+	var v: Vector3 = target.get("velocity") if "velocity" in target else Vector3.ZERO
+	v.y = 0.0
+	var now := target.global_position - global_position
+	now.y = 0.0
+	var pred := now
+	var windup_left := maxf(telegraph_time - _state_time, 0.0)
+	for i in 2:
+		var t := windup_left + pred.length() / charge_speed
+		pred = now + v * t * lead_accuracy
+	return pred.limit_length(charge_distance)
 
 
 func _can_see_target() -> bool:

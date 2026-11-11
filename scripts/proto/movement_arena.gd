@@ -49,6 +49,7 @@ const STYLE := {
 	"reflect": ["반사탄", 80.0],
 	"burst": ["먹 폭발", 200.0],
 	"pull": ["먹 끌어당김", 300.0],
+	"shape": ["먹 도형", 150.0],
 	"kill": ["처치", 100.0],
 }
 
@@ -151,8 +152,16 @@ func _ready() -> void:
 	player.damaged.connect(_on_player_damaged)
 	player.sword.hit_enemy.connect(_on_sword_hit)
 	player.sword.ink_burst.connect(_on_ink_burst)
+	player.ink_trail.shape_closed.connect(_on_ink_shape)
+	player.ink_trail.ink_burst.connect(_on_ink_burst)  # 도형 안 먹 스택 폭발
 
 	_set_camera_mode(false)
+
+
+## 먹 획은 먹 스타일 등급에 따라 강화된다 (ink_trail.gd TIERS)
+func _process(_delta: float) -> void:
+	if player and player.ink_trail and style:
+		player.ink_trail.set("rank", maxi(int(style.call("rank")), 0))
 
 
 func _feedback(trauma: float, fov: float) -> void:
@@ -211,6 +220,21 @@ func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
 	fx.call("impact_frame", "ink_burst", 2, false)
 	_big_moment(pos, 0.12, -7.0, 140.0)
 	_feedback(0.4, 0.0)
+
+
+## 먹 도형: 슬라이드 먹 획으로 닫힌 도형을 그렸다. 안에 적이 많을수록 점수가 크다
+func _on_ink_shape(center: Vector3, inside: Array, _killed: int) -> void:
+	if inside.is_empty():
+		_feedback(0.08, 0.0)
+		return
+	var n := inside.size()
+	_style("shape", 1.0 + 0.5 * (n - 1), " ×%d" % n if n > 1 else "")
+	for e in inside:
+		if is_instance_valid(e):
+			hit_fx.call("damage_number", e.call("aim_point"), player.ink_trail.call("shape_damage"), n > 1)
+	fx.call("hitstop", 0.05)
+	_big_moment(center + Vector3.UP, 0.1, -5.0, 120.0)
+	_feedback(0.3, 0.0)
 
 
 func _on_player_damaged(_amount: float) -> void:
