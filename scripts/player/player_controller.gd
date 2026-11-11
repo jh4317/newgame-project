@@ -16,6 +16,8 @@ signal damaged(amount: float)
 signal dashed
 signal wall_jumped
 signal landed(fall_speed: float)
+signal jumped
+signal slide_started
 
 enum State { GROUND, SLIDE, AIR, WALL, DASH }
 
@@ -312,6 +314,7 @@ func _physics_process(delta: float) -> void:
 				bhop_chain += 1
 			vy = jump_velocity()
 			_consume_jump()
+			jumped.emit()
 		elif _since_wall <= wall_coyote_time and stamina >= wall_jump_cost:
 			hvel -= _wall_normal * minf(hvel.dot(_wall_normal), 0.0)  # 벽 쪽으로 향하던 속도 제거
 			hvel += _wall_normal * wall_jump_push
@@ -441,6 +444,7 @@ func _update_state(on_floor: bool, input_dir: Vector3, hvel: Vector3) -> void:
 		if Input.is_action_pressed("slide"):
 			if state != State.SLIDE:
 				_begin_slide(hvel, input_dir)
+				slide_started.emit()
 			state = State.SLIDE
 		else:
 			state = State.GROUND

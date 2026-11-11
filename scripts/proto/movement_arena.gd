@@ -23,6 +23,7 @@ const SpeedLines := preload("res://scripts/fx/speed_lines.gd")
 const HitEffects := preload("res://scripts/fx/hit_effects.gd")
 const ScreenFx := preload("res://scripts/fx/screen_fx.gd")
 const StyleMeter := preload("res://scripts/systems/style_meter.gd")
+const Sfx := preload("res://scripts/systems/sfx.gd")
 
 ## 먹 끌어당김 (먹이 가득 찬 적에게 반사탄 적중, GDD 3.8)
 const PULL_RADIUS := 14.0      # 이 거리 안의 다른 적을 끌어당긴다
@@ -116,6 +117,7 @@ var speed_lines: CanvasLayer
 var hit_fx: Node3D
 var screen_fx: CanvasLayer
 var style: CanvasLayer
+var sfx: Node
 var ink_pulls := 0
 var enemies: Array[Node] = []
 var kills := 0
@@ -163,6 +165,9 @@ func _ready() -> void:
 	add_child(screen_fx)
 	style = StyleMeter.new()
 	add_child(style)
+	sfx = Sfx.new()
+	add_child(sfx)
+	sfx.set("listener", player)
 
 	if not wave_mode:
 		# 연습 모드: 모든 적을 한꺼번에 두고, 죽으면 잠시 뒤 다시 살아난다
@@ -177,8 +182,17 @@ func _ready() -> void:
 	player.respawned.connect(hud.reset_top_speed)
 	player.parried.connect(_on_parried)
 	# 속도감 연출: 동작마다 카메라 흔들림·시야 킥 (GDD 4.1)
-	player.dashed.connect(func(): _feedback(0.25, 8.0))
-	player.wall_jumped.connect(func(): _feedback(0.12, 0.0))
+	player.dashed.connect(func():
+		_feedback(0.25, 8.0)
+		sfx.call("play", "dash"))
+	player.wall_jumped.connect(func():
+		_feedback(0.12, 0.0)
+		sfx.call("play", "wall_jump"))
+	# 버니합을 이어 갈수록 점프 소리가 조금씩 높아진다
+	player.jumped.connect(func(): sfx.call("play", "jump", 0.0, 1.0 + 0.06 * mini(int(player.get("bhop_chain")), 6)))
+	player.slide_started.connect(func(): sfx.call("play", "slide"))
+	player.sword.swung.connect(func(combo: int): sfx.call("play", "swing_big" if combo == 3 else "swing"))
+	player.sword.charge_level_up.connect(func(lv: int): sfx.call("play", "charge", 0.0, 1.0 if lv == 1 else 1.5))
 	player.landed.connect(_on_landed)
 	player.damaged.connect(_on_player_damaged)
 	player.sword.hit_enemy.connect(_on_sword_hit)
@@ -230,6 +244,7 @@ func _restart_run() -> void:
 	run_cleared = false
 	wave = 0
 	_result.visible = false
+	sfx.call("play", "wave_start", 0.0, 0.85)  # 재시작
 	_next_wave()
 
 
@@ -240,6 +255,8 @@ func _next_wave() -> void:
 		_spawn_enemy(entry[0], entry[1], entry[2], false)
 		_wave_alive += 1
 	_show_banner("웨이브 %d / %d" % [wave, WAVES.size()])
+	if wave > 1:
+		sfx.call("play", "wave_start", 0.0, 1.0 + 0.06 * (wave - 1))
 
 
 func _on_wave_enemy_down() -> void:
@@ -264,6 +281,7 @@ func _clear_run() -> void:
 	_result.text = "아레나 클리어\n\n클리어 시간  %d:%05.2f\n최고 등급  %s\n피격  %d회\n\nR: 다시 시작" % [
 		int(run_time / 60.0), fmod(run_time, 60.0), best_name, hits_taken]
 	_result.visible = true
+	sfx.call("play", "clear")
 	fx.call("impact_frame", "clear", 4, true)
 	_feedback(0.5, -6.0)
 
@@ -326,6 +344,8 @@ func _feedback(trauma: float, fov: float) -> void:
 
 
 func _on_landed(fall_speed: float) -> void:
+	if fall_speed > 3.0:
+		sfx.call("play", "land", lerpf(-10.0, 4.0, clampf((fall_speed - 3.0) / 25.0, 0.0, 1.0)))
 	# 높은 곳에서 떨어질수록 세게 (점프 한 번 착지 ≈ 11 m/s는 흔들지 않음)
 	if fall_speed > 14.0:
 		_feedback(clampf((fall_speed - 14.0) / 16.0, 0.1, 0.5), 0.0)
@@ -341,6 +361,13 @@ func _on_sword_hit(enemy: Node, killed: bool, melee: bool, kind: String) -> void
 	# 반격으로 회복 가능 체력을 되찾는다: 가까이 붙어 벨수록 많이 (GDD 5.1)
 	_recover(float(RECOVER_ON_HIT.get(kind, 0.0)))
 	var sword: Node = player.get("sword")
+	match kind:
+		"finisher", "stroke":
+			sfx.call("play", "hit_heavy")
+		"melee":
+			sfx.call("play", "hit")
+		_:
+			sfx.call("play", "wave_hit", 2.0 if kind == "wave_big" else 0.0)
 	match kind:
 		"finisher":
 			hit_fx.call("finisher_hit", pos, dir, sword.get("finisher_damage"))
@@ -366,6 +393,7 @@ func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
 	var base := (enemy as Node3D).global_position
 	var pos: Vector3 = enemy.call("aim_point")
 	hit_fx.call("ink_burst", pos, base, bonus)
+	sfx.call("play", "ink_burst")
 	ink_bursts += 1
 	_style("burst")
 	_gain_ink(INK_GAIN_BURST)
@@ -378,6 +406,7 @@ func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
 ## 일필휘지 차지 획 긋기: 바닥을 가르는 한 획. 최대 차지는 가장 큰 순간으로 연출
 func _on_stroke_struck(from: Vector3, to: Vector3, level: int) -> void:
 	var mid := from.lerp(to, 0.5) + Vector3.UP
+	sfx.call("play", "stroke_big" if level >= 2 else "stroke")
 	if level >= 2:
 		fx.call("hitstop", 0.08)
 		fx.call("impact_frame", "stroke", 2, false)
@@ -395,6 +424,7 @@ func _on_ink_shape(center: Vector3, inside: Array, _killed: int) -> void:
 		_feedback(0.08, 0.0)
 		return
 	var n := inside.size()
+	sfx.call("play", "shape", 0.0, 1.0 + 0.08 * mini(n - 1, 4))
 	_style("shape", 1.0 + 0.5 * (n - 1), " ×%d" % n if n > 1 else "")
 	_gain_ink(INK_GAIN_SHAPE_PER_ENEMY * n)
 	for e in inside:
@@ -407,6 +437,7 @@ func _on_ink_shape(center: Vector3, inside: Array, _killed: int) -> void:
 
 func _on_player_damaged(_amount: float) -> void:
 	hits_taken += 1
+	sfx.call("play", "hurt")
 	_feedback(0.3, 0.0)
 	style.call("on_damaged")  # 피격하면 스타일이 한 등급만큼 깎인다
 
@@ -422,6 +453,7 @@ func _style(id: String, mul := 1.0, label_suffix := "") -> void:
 ## 반사탄이 적에게 맞았다 (projectile.gd → 그룹 "combat_events")
 func on_reflect_hit(enemy: Node, _killed: bool, ink_full: bool) -> void:
 	_style("reflect")
+	sfx.call("play_at", "hit", (enemy as Node3D).global_position, 0.0, 1.15)
 	_recover(float(RECOVER_ON_HIT["reflect"]))
 	if ink_full:
 		_ink_pull(enemy)
@@ -449,6 +481,7 @@ func _ink_pull(center_enemy: Node) -> void:
 	ink_pulls += 1
 	player.call("heal", PULL_HEAL)
 	hit_fx.call("ink_pull", center, from_points)
+	sfx.call("play", "pull")
 	hit_fx.call("heal_text", player.global_position, PULL_HEAL)
 	_style("pull")
 	fx.call("hitstop", 0.06)
@@ -462,12 +495,14 @@ func _gain_ink(amount: float) -> void:
 	var got := float(player.get("health")) - before
 	if got >= 1.0:
 		hit_fx.call("heal_text", player.global_position, got)
+		sfx.call("play", "heal")
 
 
 func _recover(amount: float) -> void:
 	var got: float = player.call("recover", amount)
 	if got >= 1.0:
 		hit_fx.call("heal_text", player.global_position, got)
+		sfx.call("play", "heal")
 
 
 ## target 바로 아래 바닥 높이 (없으면 fallback)
@@ -499,6 +534,7 @@ func _on_parried(_projectile: Node) -> void:
 	fx.call("impact_frame", "parry", 2, true)
 	_feedback(0.35, 0.0)
 	hit_fx.call("parry_text", player.global_position)
+	sfx.call("play", "parry")
 	_style("parry")
 	var cam := get_viewport().get_camera_3d()
 	var size := get_viewport().get_visible_rect().size
@@ -523,6 +559,7 @@ func _on_enemy_died(enemy: Node) -> void:
 	var epos := (enemy as Node3D).global_position
 	var elite: bool = enemy.call("is_elite")
 	hit_fx.call("enemy_killed", epos, enemy.call("body_height"), elite)
+	sfx.call("play", "kill", 2.0 if elite else 0.0, 0.8 if elite else 1.0)
 	_big_moment(epos + Vector3.UP * 1.2, 0.14 if elite else 0.1, -9.0 if elite else -7.0, 150.0 if elite else 120.0)
 	fx.call("hitstop", 0.05)
 	fx.call("impact_frame", "kill", 3, false)

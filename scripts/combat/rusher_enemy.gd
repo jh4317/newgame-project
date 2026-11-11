@@ -258,12 +258,14 @@ func _begin_windup() -> void:
 	_charge_count += 1
 	_unparryable = unparryable_every > 0 and _charge_count % unparryable_every == 0
 	_set_state(State.WINDUP)
+	get_tree().call_group("sfx", "play_at", "telegraph_red" if _unparryable else "telegraph", global_position, 0.0, 0.8)
 
 
 func _begin_charge() -> void:
 	_charge_left = charge_distance
 	_hit_done = false
 	_set_state(State.CHARGE)
+	get_tree().call_group("sfx", "play_at", "rush", global_position)
 	var c := WARN_RED if _unparryable else Color(1, 1, 1)
 	_set_horn(c, 6.0)  # 돌진 중에도 패링 가능 여부를 계속 보여 준다
 

@@ -57,6 +57,8 @@ const CHARGE_LEVELS := [
 
 ## 차지 획을 그었다 (아레나 연출용). level: 1 또는 2
 signal stroke_struck(from: Vector3, to: Vector3, level: int)
+## 차지 단계가 올랐다 (1 또는 2)
+signal charge_level_up(level: int)
 
 var player: CharacterBody3D
 var combo := 0
@@ -158,6 +160,7 @@ func _update_charge(delta: float) -> void:
 		if lv > _charge_level:
 			_charge_level = lv
 			_blade_glow = 12.0  # 단계가 오르는 순간 번쩍
+			charge_level_up.emit(lv)
 		return
 	if not _charging:
 		return

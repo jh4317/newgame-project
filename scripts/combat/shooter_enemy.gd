@@ -179,6 +179,7 @@ func _physics_process(delta: float) -> void:
 		if _can_see_target():
 			_next_unparryable = unparryable_every > 0 and (_shot_count + 1) % unparryable_every == 0
 			_telegraph = telegraph_time
+			get_tree().call_group("sfx", "play_at", "telegraph_red" if _next_unparryable else "telegraph", global_position)
 		else:
 			_timer = 0.3
 
@@ -202,6 +203,7 @@ func _fire() -> void:
 	var p := Projectile.new()
 	p.setup(muzzle, aim.normalized() * projectile_speed, projectile_damage, not _next_unparryable, self)
 	get_parent().add_child(p)
+	get_tree().call_group("sfx", "play_at", "enemy_shoot_red" if _next_unparryable else "enemy_shoot", muzzle)
 
 
 ## 탄이 날아가는 동안 플레이어가 수평으로 등속 이동한다고 보고 요격점을 구한다 (두 번 반복해 근사)
