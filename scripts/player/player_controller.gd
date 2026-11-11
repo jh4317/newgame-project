@@ -9,7 +9,8 @@ extends CharacterBody3D
 const Sword := preload("res://scripts/combat/sword.gd")
 
 signal respawned
-signal parried(projectile: Node)
+## source: 되받아친 투사체, 또는 근접 패링으로 튕겨 낸 적
+signal parried(source: Node)
 signal damaged(amount: float)
 signal dashed
 signal wall_jumped
@@ -55,6 +56,7 @@ enum State { GROUND, SLIDE, AIR, WALL, DASH }
 @export var dash_speed := 30.0
 @export var dash_time := 0.15  # 30 m/s × 0.15초 = 4.5 m
 @export var dash_cooldown := 0.1
+@export var dash_iframe_time := 0.2  # 대시 시작부터 이 시간 동안 무적 (대시 0.15초 + 여유 0.05초)
 
 @export_group("Combat")
 @export var max_health := 100.0
@@ -97,6 +99,7 @@ var _dash_left := 0.0
 var _dash_cooldown_left := 0.0
 var _dash_dir := Vector3(0, 0, -1)
 var _dash_exit_speed := 0.0
+var _invuln_left := 0.0
 
 var _since_floor := 10.0
 var _since_jump_pressed := 10.0
@@ -151,7 +154,14 @@ func parry_status() -> String:
 	return "준비"
 
 
+## 대시 무적 중이면 true: 탄은 몸을 통과하고 돌진은 빗나간다
+func is_invulnerable() -> bool:
+	return _invuln_left > 0.0
+
+
 func take_damage(amount: float) -> void:
+	if is_invulnerable():
+		return
 	health -= amount
 	damaged.emit(amount)
 	if health <= 0.0:
@@ -169,6 +179,7 @@ func respawn() -> void:
 	stamina = stamina_max
 	health = max_health
 	_dash_left = 0.0
+	_invuln_left = 0.0
 	_parry_left = 0.0
 	_parry_cooldown_left = 0.0
 	state = State.AIR
@@ -200,6 +211,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		_since_floor += delta
 	_dash_cooldown_left = maxf(0.0, _dash_cooldown_left - delta)
+	_invuln_left = maxf(0.0, _invuln_left - delta)
 
 	var hvel := Vector3(velocity.x, 0.0, velocity.z)
 
@@ -305,10 +317,40 @@ func _try_parry() -> void:
 			var ink: Node = shooter.get("ink")
 			if ink:
 				ink.call("add", float(ink.get("max_ink")))
-		_parry_hit = true
-		parry_count += 1
-		health = minf(max_health, health + parry_heal)
-		parried.emit(p)
+		_parry_success(p)
+	# 근접 패링: 돌진 중인 적을 튕겨 내 경직시킨다
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if _parry_hit:
+			return
+		if e.has_method("is_parryable_attack"):
+			try_parry_melee(e)
+
+
+## 근접 공격을 패링할 수 있으면 처리하고 true. 적이 플레이어를 베기 직전에도 호출한다
+## (같은 프레임에서 적이 먼저 처리돼도 열려 있는 패링 판정이 이기도록)
+func try_parry_melee(enemy: Node) -> bool:
+	if _parry_left <= 0.0 or _parry_hit or not bool(enemy.call("is_parryable_attack")):
+		return false
+	var to: Vector3 = (enemy as Node3D).global_position - global_position
+	var flat := Vector3(to.x, 0.0, to.z)
+	if flat.length() > parry_radius + 1.0 or absf(to.y) > 2.0:  # 1.0 = 적 몸통 반폭 여유
+		return false
+	var half_angle := deg_to_rad(parry_angle_deg) * 0.5
+	if flat.length() > 0.3 and facing.angle_to(flat.normalized()) > half_angle:
+		return false
+	enemy.call("on_parried", global_position)
+	var ink: Node = enemy.get("ink")
+	if ink:
+		ink.call("add", float(ink.get("max_ink")))  # 패링 성공은 먹을 즉시 가득 채운다 (GDD 3.8)
+	_parry_success(enemy)
+	return true
+
+
+func _parry_success(source: Node) -> void:
+	_parry_hit = true
+	parry_count += 1
+	health = minf(max_health, health + parry_heal)
+	parried.emit(source)
 
 
 ## 조준 방향으로 되돌리되, 그 근처(보정 각도 안)에 적이 있으면 가장 가까운 적을 향한다
@@ -332,6 +374,7 @@ func _start_dash(hvel: Vector3, input_dir: Vector3) -> void:
 	_dash_dir = input_dir.normalized() if input_dir.length() > 0.1 else facing
 	_dash_exit_speed = maxf(hvel.length(), run_speed)
 	_dash_left = dash_time
+	_invuln_left = dash_iframe_time
 	state = State.DASH
 	_ghost_timer = 0.0
 	dashed.emit()

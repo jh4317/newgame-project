@@ -80,6 +80,8 @@ func _on_body_entered(body: Node) -> void:
 	if body.is_in_group("player"):
 		if reflected:
 			return
+		if body.has_method("is_invulnerable") and bool(body.call("is_invulnerable")):
+			return  # 대시 무적: 탄이 몸을 통과한다
 		body.call("take_damage", damage)
 		queue_free()
 	elif body.is_in_group("enemy"):

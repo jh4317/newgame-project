@@ -1,5 +1,5 @@
 extends Node3D
-## 1~2단계 프로토타입: 회색 박스 아레나 + 사격형 적과 패링 (GDD 10.2).
+## 1~2단계 프로토타입: 회색 박스 아레나 + 사격형·돌격형 적과 패링 (GDD 10.2).
 ## 아레나·플레이어·카메라·HUD를 코드로 만든다. V 키로 탑뷰/숄더뷰를 바꿔 두 시점을 비교한다.
 ##
 ## 좌표: +X 동쪽, -Z 북쪽(탑뷰 화면 위쪽). 카메라는 남쪽에서 내려다본다.
@@ -17,6 +17,7 @@ const ShoulderRig := preload("res://scripts/camera/shoulder_camera_rig.gd")
 const Hud := preload("res://scripts/ui/movement_hud.gd")
 const InputSetup := preload("res://scripts/systems/input_setup.gd")
 const ShooterEnemy := preload("res://scripts/combat/shooter_enemy.gd")
+const RusherEnemy := preload("res://scripts/combat/rusher_enemy.gd")
 const CombatFx := preload("res://scripts/systems/combat_fx.gd")
 const SpeedLines := preload("res://scripts/fx/speed_lines.gd")
 const HitEffects := preload("res://scripts/fx/hit_effects.gd")
@@ -50,6 +51,12 @@ const ENEMY_SPOTS := [
 	[Vector3(-25, 0, -12), 1],
 	[Vector3(26, 0, -6), 0],
 	[Vector3(36, 4.5, -27), 0],
+]
+## 돌격형 적 위치와 등급: 열린 바닥에 배치 (중급은 패링 불가 돌진을 섞는다)
+const RUSHER_SPOTS := [
+	[Vector3(8, 0.1, 6), 0],
+	[Vector3(-6, 0.1, -26), 0],
+	[Vector3(28, 0.1, 8), 1],
 ]
 
 var fx: CanvasLayer
@@ -113,6 +120,14 @@ func _ready() -> void:
 		e.target = player
 		e.died.connect(_on_enemy_died)
 		enemies.append(e)
+	for spot in RUSHER_SPOTS:
+		var r := RusherEnemy.new()
+		r.position = spot[0]
+		r.tier = spot[1]
+		r.target = player  # _ready에서 플레이어와의 충돌 예외를 걸기 때문에 add_child 전에 정한다
+		add_child(r)
+		r.died.connect(_on_enemy_died)
+		enemies.append(r)
 
 	hud = Hud.new()
 	add_child(hud)
