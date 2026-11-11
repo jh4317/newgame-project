@@ -81,6 +81,10 @@ enum State { GROUND, SLIDE, AIR, WALL, DASH }
 @export var afterimage_life := 0.25
 @export var slide_ink_spacing := 0.7    # 슬라이드 중 이 거리마다 바닥에 먹 자국을 남긴다 (m)
 
+@export_group("Ink")  ## 체력 = 먹: 맞으면 잃고, 먹 획을 그리는 데 쓰고, 공격으로 다시 채운다
+@export var ink_cost_per_meter := 0.2   # 먹 획 1 m당 드는 먹 (슬라이드 20 m/s면 초당 4)
+@export var ink_floor := 15.0           # 먹이 이보다 적으면 획을 그리지 않는다 (그리기로는 죽지 않는다)
+
 const CAPSULE_RADIUS := 0.4
 const CAPSULE_HEIGHT := 1.8
 const KILL_Y := -20.0
@@ -122,6 +126,7 @@ var _dots: Array[MeshInstance3D] = []
 var _ink_trail_dist := 0.0
 var _ink_trail_last := Vector3.ZERO
 var _stroke_active := false
+var _ink_dry := false  ## 먹이 모자라 획을 못 그리는 중
 ## 슬라이드 먹 획과 먹 도형 (ink_trail.gd). 아레나에 형제 노드로 붙는다
 var ink_trail: Node3D
 
@@ -179,7 +184,8 @@ func is_invulnerable() -> bool:
 func take_damage(amount: float) -> void:
 	if is_invulnerable():
 		return
-	health -= amount
+	health -= amount  # 체력 = 먹: 맞으면 먹을 흘린다
+	# 회복 가능 체력: 맞아서 흘린 먹. 받은 대미지의 일부까지만 (그리기로 쓴 먹은 돌려받지 못한다)
 	recoverable = minf(recoverable + amount * recoverable_ratio, max_health - maxf(health, 0.0))
 	_recoverable_hold = recoverable_window
 	damaged.emit(amount)
@@ -325,7 +331,8 @@ func _physics_process(delta: float) -> void:
 
 func _update_parry(delta: float) -> void:
 	_parry_cooldown_left = maxf(0.0, _parry_cooldown_left - delta)
-	if Input.is_action_just_pressed("parry") and _parry_left <= 0.0 and _parry_cooldown_left <= 0.0:
+	var charging := sword != null and bool(sword.call("is_charging"))  # 차지 중에는 패링 불가
+	if Input.is_action_just_pressed("parry") and _parry_left <= 0.0 and _parry_cooldown_left <= 0.0 and not charging:
 		_parry_left = parry_window
 		_parry_hit = false
 	if _parry_left <= 0.0:
@@ -679,8 +686,17 @@ func _update_ink_trail(ground: Vector3, _height: float) -> void:
 		_ink_trail_dist += Vector2(feet.x - _ink_trail_last.x, feet.z - _ink_trail_last.z).length()
 		if _ink_trail_dist >= slide_ink_spacing:
 			_ink_trail_dist = 0.0
-			var dir := Vector3(velocity.x, 0.0, velocity.z)
-			ink_trail.call("stamp", feet, dir.normalized() if dir.length() > 0.1 else _slide_dir)
+			var cost := slide_ink_spacing * ink_cost_per_meter
+			if health - cost < ink_floor:
+				# 먹이 모자라면 획이 끊긴다 (다시 채우면 이어서 새 획)
+				if not _ink_dry:
+					ink_trail.call("break_stroke")
+				_ink_dry = true
+			else:
+				_ink_dry = false
+				health -= cost
+				var dir := Vector3(velocity.x, 0.0, velocity.z)
+				ink_trail.call("stamp", feet, dir.normalized() if dir.length() > 0.1 else _slide_dir)
 	else:
 		_ink_trail_dist = slide_ink_spacing  # 다시 미끄러지자마자 첫 자국이 찍히게
 	_ink_trail_last = feet

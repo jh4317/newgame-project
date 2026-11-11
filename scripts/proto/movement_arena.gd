@@ -30,6 +30,10 @@ const PULL_GAP := 2.6          # 중심 적에게서 이만큼 떨어진 자리�
 const PULL_HEAL := 25.0
 const PULL_CHAIN_INK := 30.0   # 끌려온 적에게도 먹이 묻는다
 
+## 체력 = 먹: 먹을 터뜨리거나 도형으로 가두면 먹을 다시 얻는다 (먹 획을 그리는 데 쓴 만큼 벌충)
+const INK_GAIN_BURST := 10.0         # 먹 폭발 1번 (근접·도형)
+const INK_GAIN_SHAPE_PER_ENEMY := 5.0  # 도형 안 적 1마리당
+
 ## 적중마다 되찾는 회복 가능 체력 (GDD 5.1). 근접이 원거리보다 많다
 const RECOVER_ON_HIT := {
 	"melee": 15.0,
@@ -37,6 +41,7 @@ const RECOVER_ON_HIT := {
 	"wave": 3.0,
 	"wave_big": 4.0,
 	"reflect": 12.0,
+	"stroke": 20.0,
 }
 
 ## 먹 스타일 점수 (GDD 5.2)
@@ -50,6 +55,7 @@ const STYLE := {
 	"burst": ["먹 폭발", 200.0],
 	"pull": ["먹 끌어당김", 300.0],
 	"shape": ["먹 도형", 150.0],
+	"stroke": ["획 긋기", 60.0],
 	"kill": ["처치", 100.0],
 }
 
@@ -69,6 +75,41 @@ const RUSHER_SPOTS := [
 	[Vector3(-9, 0.1, -39), 0],
 	[Vector3(42, 0.1, 12), 1],
 ]
+
+## 웨이브 (GDD 7.1): 적이 웨이브로 나오고, 다 처치하면 다음 웨이브. 마지막 웨이브를 끝내면 클리어 평가.
+## 각 항목: [종류, 위치, 등급(0 하급 / 1 중급)]
+const WAVES := [
+	[
+		["shooter", Vector3(0, 0, 0), 0],
+		["shooter", Vector3(-20, 0, -10), 0],
+		["rusher", Vector3(12, 0.1, 9), 0],
+	],
+	[
+		["rusher", Vector3(-12, 0.1, 6), 0],
+		["rusher", Vector3(14, 0.1, -6), 0],
+		["shooter", Vector3(-37.5, 0, -18), 1],
+		["shooter", Vector3(56, 4.5, -39), 0],
+	],
+	[
+		["rusher", Vector3(0, 0.1, -10), 1],
+		["shooter", Vector3(39, 0, -9), 1],
+		["rusher", Vector3(-15, 0.1, 5), 0],
+		["rusher", Vector3(15, 0.1, 5), 0],
+		["shooter", Vector3(-25, 0, -30), 0],
+	],
+]
+const WAVE_DELAY := 1.5  # 웨이브를 끝내고 다음 웨이브가 나오기까지 (초)
+
+## false면 연습 모드(모든 적이 한꺼번에, 죽으면 부활). add_child 전에 정한다
+var wave_mode := true
+var wave := 0               # 지금 웨이브 번호 (1부터, 0 = 시작 전)
+var run_time := 0.0         # 이번 판 경과 시간
+var hits_taken := 0
+var run_cleared := false
+var _wave_alive := 0
+var _run_id := 0
+var _wave_banner: Label
+var _result: Label
 
 var fx: CanvasLayer
 var speed_lines: CanvasLayer
@@ -123,22 +164,12 @@ func _ready() -> void:
 	style = StyleMeter.new()
 	add_child(style)
 
-	for spot in ENEMY_SPOTS:
-		var e := ShooterEnemy.new()
-		e.position = spot[0]
-		e.tier = spot[1]
-		add_child(e)
-		e.target = player
-		e.died.connect(_on_enemy_died)
-		enemies.append(e)
-	for spot in RUSHER_SPOTS:
-		var r := RusherEnemy.new()
-		r.position = spot[0]
-		r.tier = spot[1]
-		r.target = player  # _ready에서 플레이어와의 충돌 예외를 걸기 때문에 add_child 전에 정한다
-		add_child(r)
-		r.died.connect(_on_enemy_died)
-		enemies.append(r)
+	if not wave_mode:
+		# 연습 모드: 모든 적을 한꺼번에 두고, 죽으면 잠시 뒤 다시 살아난다
+		for spot in ENEMY_SPOTS:
+			_spawn_enemy("shooter", spot[0], spot[1], true)
+		for spot in RUSHER_SPOTS:
+			_spawn_enemy("rusher", spot[0], spot[1], true)
 
 	hud = Hud.new()
 	add_child(hud)
@@ -154,14 +185,135 @@ func _ready() -> void:
 	player.sword.ink_burst.connect(_on_ink_burst)
 	player.ink_trail.shape_closed.connect(_on_ink_shape)
 	player.ink_trail.ink_burst.connect(_on_ink_burst)  # 도형 안 먹 스택 폭발
+	player.sword.stroke_struck.connect(_on_stroke_struck)
 
 	_set_camera_mode(false)
+	_build_run_ui()
+	if wave_mode:
+		player.respawned.connect(_restart_run)  # 죽거나 R: 1초 안에 판 전체를 처음부터 (GDD 8.2)
+		_restart_run()
 
 
-## 먹 획은 먹 스타일 등급에 따라 강화된다 (ink_trail.gd TIERS)
-func _process(_delta: float) -> void:
+# ---------------------------------------------------------------- 웨이브·판 (GDD 7.1, 5.2, 8.2)
+
+func _spawn_enemy(kind: String, pos: Vector3, tier: int, respawns: bool) -> Node:
+	var e: Node3D = ShooterEnemy.new() if kind == "shooter" else RusherEnemy.new()
+	e.position = pos
+	e.set("tier", tier)
+	e.set("respawns", respawns)
+	e.set("target", player)  # 돌격형은 _ready에서 플레이어와의 충돌 예외를 걸기 때문에 add_child 전에 정한다
+	add_child(e)
+	e.died.connect(_on_enemy_died)
+	enemies.append(e)
+	return e
+
+
+## 판 전체를 처음 상태로: 적·탄·검기·먹 획을 지우고 점수·시간·웨이브를 되돌린 뒤 1웨이브부터
+func _restart_run() -> void:
+	for e in enemies:
+		if is_instance_valid(e):
+			e.queue_free()
+	enemies.clear()
+	_run_id += 1
+	for group in ["projectile", "player_wave"]:
+		for n in get_tree().get_nodes_in_group(group):
+			n.queue_free()
+	if player.ink_trail:
+		player.ink_trail.call("end_stroke")
+	style.set("points", 0.0)
+	style.set("best_rank", -1)
+	(style.get("_recent") as Array).clear()
+	kills = 0
+	hud.set("kills", 0)
+	hits_taken = 0
+	run_time = 0.0
+	run_cleared = false
+	wave = 0
+	_result.visible = false
+	_next_wave()
+
+
+func _next_wave() -> void:
+	wave += 1
+	_wave_alive = 0
+	for entry in WAVES[wave - 1]:
+		_spawn_enemy(entry[0], entry[1], entry[2], false)
+		_wave_alive += 1
+	_show_banner("웨이브 %d / %d" % [wave, WAVES.size()])
+
+
+func _on_wave_enemy_down() -> void:
+	_wave_alive -= 1
+	if _wave_alive > 0 or run_cleared:
+		return
+	if wave >= WAVES.size():
+		_clear_run()
+		return
+	var this_run := _run_id
+	get_tree().create_timer(WAVE_DELAY).timeout.connect(func():
+		if _run_id == this_run and not run_cleared:  # 그사이 재시작했으면 무시
+			_next_wave())
+
+
+## 클리어 평가 (GDD 5.2): 클리어 시간, 최고 먹 스타일 등급, 피격 횟수
+func _clear_run() -> void:
+	run_cleared = true
+	var best: int = style.get("best_rank")
+	var ranks: Array = StyleMeter.RANKS
+	var best_name: String = "-" if best < 0 else String(ranks[best])
+	_result.text = "아레나 클리어\n\n클리어 시간  %d:%05.2f\n최고 등급  %s\n피격  %d회\n\nR: 다시 시작" % [
+		int(run_time / 60.0), fmod(run_time, 60.0), best_name, hits_taken]
+	_result.visible = true
+	fx.call("impact_frame", "clear", 4, true)
+	_feedback(0.5, -6.0)
+
+
+func _show_banner(text: String) -> void:
+	_wave_banner.text = text
+	_wave_banner.modulate.a = 1.0
+	var tw := _wave_banner.create_tween()
+	tw.tween_interval(1.2)
+	tw.tween_property(_wave_banner, "modulate:a", 0.0, 0.6)
+
+
+func _build_run_ui() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 5
+	add_child(layer)
+	_wave_banner = Label.new()
+	_wave_banner.add_theme_font_size_override("font_size", 44)
+	_wave_banner.add_theme_color_override("font_outline_color", Color.BLACK)
+	_wave_banner.add_theme_constant_override("outline_size", 8)
+	_wave_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_wave_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_wave_banner.offset_left = -300
+	_wave_banner.offset_right = 300
+	_wave_banner.offset_top = 90
+	_wave_banner.modulate.a = 0.0
+	layer.add_child(_wave_banner)
+	_result = Label.new()
+	_result.add_theme_font_size_override("font_size", 34)
+	_result.add_theme_color_override("font_outline_color", Color.BLACK)
+	_result.add_theme_constant_override("outline_size", 8)
+	_result.set_anchors_preset(Control.PRESET_CENTER)
+	_result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_result.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_result.offset_left = -320
+	_result.offset_right = 320
+	_result.offset_top = -170
+	_result.offset_bottom = 170
+	_result.visible = false
+	layer.add_child(_result)
+
+
+## 먹 획과 검(붓 단계)은 먹 스타일 등급 하나로 강화된다 (ink_trail.gd TIERS, sword.gd INK_STAGES)
+func _process(delta: float) -> void:
+	if wave_mode and not run_cleared:
+		run_time += delta
 	if player and player.ink_trail and style:
-		player.ink_trail.set("rank", maxi(int(style.call("rank")), 0))
+		var r := int(style.call("rank"))
+		player.ink_trail.set("rank", maxi(r, 0))
+		player.sword.set("rank", r)
 
 
 func _feedback(trauma: float, fov: float) -> void:
@@ -216,10 +368,25 @@ func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
 	hit_fx.call("ink_burst", pos, base, bonus)
 	ink_bursts += 1
 	_style("burst")
+	_gain_ink(INK_GAIN_BURST)
 	fx.call("hitstop", 0.07)
 	fx.call("impact_frame", "ink_burst", 2, false)
 	_big_moment(pos, 0.12, -7.0, 140.0)
 	_feedback(0.4, 0.0)
+
+
+## 일필휘지 차지 획 긋기: 바닥을 가르는 한 획. 최대 차지는 가장 큰 순간으로 연출
+func _on_stroke_struck(from: Vector3, to: Vector3, level: int) -> void:
+	var mid := from.lerp(to, 0.5) + Vector3.UP
+	if level >= 2:
+		fx.call("hitstop", 0.08)
+		fx.call("impact_frame", "stroke", 2, false)
+		_big_moment(mid, 0.12, -7.0, 160.0)
+		_feedback(0.5, 0.0)
+	else:
+		fx.call("hitstop", 0.04)
+		_big_moment(mid, 0.06, -4.0, 110.0)
+		_feedback(0.25, 0.0)
 
 
 ## 먹 도형: 슬라이드 먹 획으로 닫힌 도형을 그렸다. 안에 적이 많을수록 점수가 크다
@@ -229,6 +396,7 @@ func _on_ink_shape(center: Vector3, inside: Array, _killed: int) -> void:
 		return
 	var n := inside.size()
 	_style("shape", 1.0 + 0.5 * (n - 1), " ×%d" % n if n > 1 else "")
+	_gain_ink(INK_GAIN_SHAPE_PER_ENEMY * n)
 	for e in inside:
 		if is_instance_valid(e):
 			hit_fx.call("damage_number", e.call("aim_point"), player.ink_trail.call("shape_damage"), n > 1)
@@ -238,6 +406,7 @@ func _on_ink_shape(center: Vector3, inside: Array, _killed: int) -> void:
 
 
 func _on_player_damaged(_amount: float) -> void:
+	hits_taken += 1
 	_feedback(0.3, 0.0)
 	style.call("on_damaged")  # 피격하면 스타일이 한 등급만큼 깎인다
 
@@ -287,6 +456,14 @@ func _ink_pull(center_enemy: Node) -> void:
 	_feedback(0.35, 0.0)
 
 
+func _gain_ink(amount: float) -> void:
+	var before: float = player.get("health")
+	player.call("heal", amount)
+	var got := float(player.get("health")) - before
+	if got >= 1.0:
+		hit_fx.call("heal_text", player.global_position, got)
+
+
 func _recover(amount: float) -> void:
 	var got: float = player.call("recover", amount)
 	if got >= 1.0:
@@ -331,6 +508,8 @@ func _on_parried(_projectile: Node) -> void:
 
 
 func _on_enemy_died(enemy: Node) -> void:
+	if wave_mode:
+		_on_wave_enemy_down()
 	kills += 1
 	hud.set("kills", kills)
 	# 처치 보너스: 공중(벽·대시 포함) 처치 ×1.5, 슬라이드 중 처치 ×1.3

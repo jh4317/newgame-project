@@ -26,6 +26,7 @@ const ELITE_BURST_MAX := 120.0   # 중급이 가득(160)일 때 먹 폭발 추�
 @export var unparryable_every := 3         # 중급만: N발마다 1발은 패링 불가 탄
 @export var attack_range := 35.0
 @export var respawn_time := 4.0
+@export var respawns := true             # 웨이브 아레나에서는 false (죽으면 그대로 사라진다)
 ## 예측 사격: 플레이어가 이동할 곳을 겨냥한다. 0 = 지금 위치, 1 = 등속 이동을 가정한 정확한 요격점.
 ## 하급은 덜 정확하게 예측한다. 방향을 바꾸면 빗나간다 → '멈추지 말고 꺾어라'
 @export var lead_accuracy := 0.6
@@ -233,7 +234,8 @@ func _die() -> void:
 	visible = false
 	_col.set_deferred("disabled", true)
 	died.emit(self)
-	get_tree().create_timer(respawn_time).timeout.connect(_respawn)
+	if respawns:
+		get_tree().create_timer(respawn_time).timeout.connect(_respawn)
 
 
 func _respawn() -> void:

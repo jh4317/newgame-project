@@ -40,6 +40,7 @@ const ELITE_BURST_MAX := 120.0   # 중급이 가득(160)일 때 먹 폭발 추�
 @export var parry_knockback := 7.0
 @export var unparryable_every := 2         # 중급만: N번째 돌진마다 패링 불가
 @export var respawn_time := 4.0
+@export var respawns := true             # 웨이브 아레나에서는 false (죽으면 그대로 사라진다)
 ## 예측 돌진: 방향을 고정하는 순간, 플레이어가 돌진이 닿을 때쯤 있을 곳을 겨냥한다.
 ## 0 = 지금 위치, 1 = 등속 이동을 가정한 정확한 예측. 하급은 덜 정확하다
 @export var lead_accuracy := 0.6
@@ -327,7 +328,8 @@ func _die() -> void:
 	velocity = Vector3.ZERO
 	_col.set_deferred("disabled", true)
 	died.emit(self)
-	get_tree().create_timer(respawn_time).timeout.connect(_respawn)
+	if respawns:
+		get_tree().create_timer(respawn_time).timeout.connect(_respawn)
 
 
 func _respawn() -> void:

@@ -7,7 +7,8 @@ var kills := 0
 var _info: Label
 var _crosshair: Label
 var _top_speed := 0.0
-## 체력 막대: 흰색 = 현재 체력, 회색 = 회복 가능 체력 (붉은색은 경고 전용이라 쓰지 않는다)
+## 먹 막대 (체력 = 먹): 검은 먹 = 현재 먹, 회색 = 흘린 먹(회복 가능), 바탕은 흰 종이.
+## 붉은색은 경고 전용이라 쓰지 않는다
 const BAR_SIZE := Vector2(320, 14)
 var _bar_health: ColorRect
 var _bar_recover: ColorRect
@@ -15,16 +16,16 @@ var _bar_recover: ColorRect
 
 func _ready() -> void:
 	var bg := ColorRect.new()
-	bg.color = Color(0, 0, 0, 0.6)
+	bg.color = Color(0.93, 0.92, 0.88, 0.9)  # 종이
 	bg.position = Vector2(14, 10)
 	bg.size = BAR_SIZE + Vector2(4, 4)
 	add_child(bg)
 	_bar_recover = ColorRect.new()
-	_bar_recover.color = Color(0.55, 0.55, 0.58)
+	_bar_recover.color = Color(0.55, 0.55, 0.57)
 	_bar_recover.position = Vector2(16, 12)
 	add_child(_bar_recover)
 	_bar_health = ColorRect.new()
-	_bar_health.color = Color(0.95, 0.95, 0.97)
+	_bar_health.color = Color(0.04, 0.04, 0.05)  # 먹
 	_bar_health.position = Vector2(16, 12)
 	add_child(_bar_health)
 
@@ -66,7 +67,8 @@ func _process(_delta: float) -> void:
 	_bar_recover.size = Vector2(BAR_SIZE.x * clampf((hp + rec) / max_hp, 0.0, 1.0), BAR_SIZE.y)
 	var sword: Node = player.get("sword")
 	var combo: int = sword.get("combo") if sword else 0
-	_info.text = ("체력 %d / 100  (회복 가능 %d)\n검 콤보: %d / 3\n패링: %s  (성공 %d · 처치 %d)\n\n속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n"
+	var dry: bool = player.get("_ink_dry")
+	_info.text = ("먹 %d / 100  (흘린 먹 %d)" + ("  · 먹 부족: 획을 못 그림" if dry else "") + "\n검 콤보: %d / 3  · 붓: " + (String(sword.call("ink_stage_name")) if sword else "-") + "\n패링: %s  (성공 %d · 처치 %d)\n\n속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n"
 		+ "스태미나(벽 점프·대시): %s\n버니합 연속: %d\n높이: %4.1f m\n시점: %s") % [
 		int(hp), int(rec), combo, player.call("parry_status"), player.get("parry_count"), kills,
 		speed, _top_speed, player.call("state_name"), dots, chain, player.global_position.y, mode_name]

@@ -24,6 +24,8 @@ signal ink_burst(enemy: Node, bonus: float, killed: bool)
 
 const INK := Color(0.02, 0.02, 0.02)
 const MAX_STAMPS := 400          # 너무 길어지면 오래된 자국부터 옅어진다
+## 획의 시작·끝 굵기 (끝에서부터 1번째, 2번째, ... 자국): 붓처럼 뾰족하게
+const TIP_TAPER := [0.15, 0.35, 0.6, 0.85]
 const MAX_RANGE := 20.0          # 플레이어에게서 이보다 먼 자국은 사라진다: 도형은 캐릭터 주변에서만 (m)
 const HEIGHT_RANGE := 3.0        # 획의 가장 높은 곳보다 이만큼 위의 적까지 포함
 const AIR_REACH := 6.0           # 획의 가장 낮은 곳보다 이만큼 아래의 적까지 포함 (공중 도형이 아래 적을 가둔다)
@@ -82,6 +84,9 @@ func trail_speed_bonus(pos: Vector3) -> float:
 var _stamps: Array = []
 var _blob_mesh: SphereMesh
 var _next_is_start := true
+var _stroke_count := 0  ## 지금 획에서 찍은 자국 수 (시작 가늘기용)
+var _line_counter := 0  ## 차지 획 번호
+var _line_entry := {}   ## 슬라이드 획이 차지 획을 처음 가로지른 곳 {line, hit, stamp}
 
 
 func _ready() -> void:
@@ -97,22 +102,91 @@ func stroke_length() -> int:
 
 
 ## 바닥 ground에 dir 방향으로 먹 자국을 찍고, 닫힌 도형이 생겼는지 확인한다
-func stamp(ground: Vector3, dir: Vector3) -> void:
+## line_id: 차지 획 긋기로 그은 자국이면 그 획의 번호 (0 = 슬라이드 획)
+func stamp(ground: Vector3, dir: Vector3, width_mul := 1.0, line_id := 0) -> void:
 	var p := Vector2(ground.x, ground.z)
 	var start := _next_is_start or _stamps.is_empty()
 	_next_is_start = false
+	if start:
+		_stroke_count = 0
+	# 붓을 대는 순간: 획의 첫 자국 몇 개는 가늘게 시작해 점점 굵어진다 (뾰족한 시작)
+	var taper: float = TIP_TAPER[_stroke_count] if _stroke_count < TIP_TAPER.size() else 1.0
+	_stroke_count += 1
 	var prev = null if start else _stamps.back()["pos"]
-	var nodes := _spawn_blobs(ground, dir, prev)
+	var nodes := _spawn_blobs(ground, dir, prev, width_mul * taper)
+	if start:
+		_line_entry = {}  # 새 획: 차지 획 교차 기록을 지운다
+	var closed := false
 	if not start:
-		_check_loop(p, ground.y)
-	_stamps.append({"p": p, "y": ground.y, "pos": ground, "age": 0.0, "start": start, "nodes": nodes})
+		closed = _check_loop(p, ground.y)
+		if not closed and line_id == 0:
+			closed = _check_line_cross(p, ground.y)
+	var s := {"p": p, "y": ground.y, "pos": ground, "age": 0.0, "start": start or closed,
+		"line": line_id, "nodes": nodes}
+	_stamps.append(s)
+	if not _line_entry.is_empty() and _line_entry["stamp"] == null:
+		_line_entry["stamp"] = s  # 첫 교차 직후의 자국부터 도형에 들어간다
 	if _stamps.size() > MAX_STAMPS:
 		_fade(_stamps.pop_front(), 0.8)
 
 
+## 차지 획 긋기(sword.gd): from에서 to까지 바닥에 굵은 직선 획을 한 번에 긋는다.
+## 지금 획(슬라이드)에 이어 그어서 도형을 닫을 수 있다. 다 그은 뒤에는 획을 끊는다
+## (다음 슬라이드 자국이 획 끝에서 캐릭터까지 이어지지 않게)
+func draw_line(from: Vector3, to: Vector3, width_mul: float) -> void:
+	var floor_y := _floor_below(from)
+	var a := Vector3(from.x, floor_y, from.z)
+	var b := Vector3(to.x, floor_y, to.z)
+	if not _stamps.is_empty() and Vector2(a.x, a.z).distance_to(_stamps.back()["p"]) > 3.0:
+		_next_is_start = true  # 지금 획과 멀면 새 획으로
+	var dir := (b - a).normalized()
+	var n := maxi(1, int(a.distance_to(b) / 0.7))
+	_line_counter += 1
+	for i in n + 1:
+		stamp(a.lerp(b, float(i) / n), dir, width_mul, _line_counter)
+	_taper_end()
+	_next_is_start = true
+
+
+func _floor_below(pos: Vector3) -> float:
+	var q := PhysicsRayQueryParameters3D.create(pos + Vector3.UP * 0.5, pos + Vector3.DOWN * 30.0)
+	var ex: Array[RID] = []
+	for e in get_tree().get_nodes_in_group("enemy"):
+		ex.append((e as CollisionObject3D).get_rid())
+	if player is CollisionObject3D:
+		ex.append((player as CollisionObject3D).get_rid())
+	q.exclude = ex
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	return pos.y if hit.is_empty() else float((hit["position"] as Vector3).y)
+
+
 ## 슬라이드를 멈췄다: 다음 자국부터 새 획이 된다 (이미 찍힌 자국은 평소대로 옅어진다)
 func break_stroke() -> void:
+	if not _next_is_start:
+		_taper_end()
 	_next_is_start = true
+
+
+## 붓을 떼는 순간: 획의 마지막 자국 몇 개를 가늘게 줄여 끝을 뾰족하게 뺀다
+func _taper_end() -> void:
+	var k := 0
+	for i in range(_stamps.size() - 1, -1, -1):
+		if k >= TIP_TAPER.size():
+			break
+		var s: Dictionary = _stamps[i]
+		var f: float = TIP_TAPER[k]
+		for m in s["nodes"]:
+			var mi := m as MeshInstance3D
+			if not is_instance_valid(mi) or not mi.has_meta("size"):
+				continue
+			var size: Vector3 = mi.get_meta("size")
+			var joint: bool = mi.get_meta("joint")
+			var target := size * Vector3(f, 1.0, f if joint else 1.0)
+			mi.set_meta("size", target)
+			mi.create_tween().tween_property(mi, "scale", target, 0.1)
+		k += 1
+		if s["start"]:
+			break
 
 
 ## 모든 자국을 바로 지운다 (리스폰)
@@ -180,18 +254,18 @@ func _contact_ink(delta: float) -> void:
 		_contact_acc[e] = acc
 
 
-func _check_loop(p: Vector2, y: float) -> void:
+func _check_loop(p: Vector2, y: float) -> bool:
 	var n := _stamps.size()
 	if n < 3:
-		return
+		return false
 	var a: Vector2 = _stamps[n - 1]["p"]
 	# 새 선분 a→p 와 이전 선분들(바로 앞 선분 제외)의 교차를 찾는다. 가장 최근 것부터.
 	# 같은 획 안에서만 찾는다: 획이 끊긴 곳(start)을 지나면 멈춘다
 	for i in range(n - 3, -1, -1):
 		if _stamps[i + 2]["start"]:
-			return
+			return false
 		if _stamps[i + 1]["start"]:
-			return
+			return false
 		var c: Vector2 = _stamps[i]["p"]
 		var d: Vector2 = _stamps[i + 1]["p"]
 		var hit = Geometry2D.segment_intersects_segment(a, p, c, d)
@@ -202,7 +276,7 @@ func _check_loop(p: Vector2, y: float) -> void:
 			poly.append(_stamps[j]["p"])
 		var area := absf(_area(poly))
 		if area < float(tier()["min_area"]):
-			return  # 너무 작은 고리(제자리 흔들림)는 무시
+			return false  # 너무 작은 고리(제자리 흔들림)는 무시
 		var used := _stamps.slice(i + 1, n)
 		_stamps = _stamps.slice(0, i + 1)
 		# 공중에서 그린 획도 도형이 된다. 채우기는 가장 낮은 높이에,
@@ -213,7 +287,50 @@ func _check_loop(p: Vector2, y: float) -> void:
 			low_y = minf(low_y, float(s["y"]))
 			high_y = maxf(high_y, float(s["y"]))
 		_close_shape(poly, low_y, high_y, used)
-		return
+		return true
+	return false
+
+
+## 슬라이드 획이 차지 획(일필휘지 획 긋기)을 두 번 가로지르면 도형이 닫힌다.
+## 첫 번째로 가로지른 곳을 기억해 두고, 같은 차지 획을 다시 가로지르면
+## [첫 교차점 → 그 사이 슬라이드 자국 → 두 번째 교차점]을 도형으로 닫는다 (닫는 변은 차지 획 위).
+## 차지 획은 소모되지 않아 여러 번 쓸 수 있다. 닫혔으면 true
+func _check_line_cross(p: Vector2, y: float) -> bool:
+	var n := _stamps.size()
+	if n < 1:
+		return false
+	var a: Vector2 = _stamps[n - 1]["p"]
+	for i in n - 1:
+		var line_id: int = _stamps[i]["line"]
+		if line_id == 0 or int(_stamps[i + 1]["line"]) != line_id or _stamps[i + 1]["start"]:
+			continue
+		var hit = Geometry2D.segment_intersects_segment(a, p, _stamps[i]["p"], _stamps[i + 1]["p"])
+		if hit == null:
+			continue
+		var entry_idx := -1
+		if not _line_entry.is_empty() and int(_line_entry["line"]) == line_id and _line_entry["stamp"] != null:
+			entry_idx = _stamps.find(_line_entry["stamp"])
+		if entry_idx < 0:
+			_line_entry = {"line": line_id, "hit": hit, "stamp": null}  # 첫 교차: 다음 자국부터 기억
+			return false
+		var poly := PackedVector2Array([_line_entry["hit"]])
+		for j in range(entry_idx, n):
+			poly.append(_stamps[j]["p"])
+		poly.append(hit)
+		if absf(_area(poly)) < float(tier()["min_area"]):
+			_line_entry = {"line": line_id, "hit": hit, "stamp": null}
+			return false
+		var used := _stamps.slice(entry_idx, n)
+		_stamps = _stamps.slice(0, entry_idx)
+		var low_y := y
+		var high_y := y
+		for s in used:
+			low_y = minf(low_y, float(s["y"]))
+			high_y = maxf(high_y, float(s["y"]))
+		_line_entry = {}
+		_close_shape(poly, low_y, high_y, used)
+		return true
+	return false
 
 
 func _close_shape(poly: PackedVector2Array, y: float, high_y: float, used: Array) -> void:
@@ -273,14 +390,16 @@ func _area(poly: PackedVector2Array) -> float:
 
 ## 한 획처럼 이어 그린다: 앞 자국(prev)에서 이번 자국까지 납작한 먹 띠 + 이음매를 메우는 둥근 점.
 ## 획의 첫 자국(prev 없음)은 둥근 점만. 가끔 옆으로 작은 먹방울이 튄다.
-func _spawn_blobs(ground: Vector3, dir: Vector3, prev) -> Array:
-	var w: float = tier()["width"]
+func _spawn_blobs(ground: Vector3, dir: Vector3, prev, width_mul := 1.0) -> Array:
+	var w: float = float(tier()["width"]) * width_mul
 	var white := rank >= RANK_WHITE
 	var half_w := 0.38 * w  # 획 반폭 (m)
 	var lift := Vector3.UP * 0.015
 	var nodes: Array = []
 	# 이음매(둥근 점): 띠끼리 꺾이는 곳의 틈을 메운다
-	nodes.append(_ink_piece(ground + lift, Basis.IDENTITY, Vector3(half_w, 0.01, half_w), white))
+	var joint := _ink_piece(ground + lift, Basis.IDENTITY, Vector3(half_w, 0.01, half_w), white)
+	joint.set_meta("joint", true)
+	nodes.append(joint)
 	# 띠: 앞 자국에서 이번 자국까지. 양 끝을 반폭만큼 늘려 이음매와 겹치게 한다
 	if prev != null:
 		var a: Vector3 = prev
@@ -290,13 +409,17 @@ func _spawn_blobs(ground: Vector3, dir: Vector3, prev) -> Array:
 			var up := Vector3.UP if absf(fwd.y) < 0.95 else Vector3.FORWARD
 			var seg_basis := Basis.looking_at(fwd, up)
 			var half_len := seg.length() * 0.5 + half_w * 0.6
-			nodes.append(_ink_piece(a.lerp(ground, 0.5) + lift, seg_basis, Vector3(half_w, 0.01, half_len), white))
+			var band := _ink_piece(a.lerp(ground, 0.5) + lift, seg_basis, Vector3(half_w, 0.01, half_len), white)
+			band.set_meta("joint", false)
+			nodes.append(band)
 	# 붓 느낌: 가끔 옆으로 튄 작은 먹방울
 	if randf() < 0.25:
 		var side := dir.cross(Vector3.UP).normalized() * (1.0 if randf() < 0.5 else -1.0)
 		var r := randf_range(0.06, 0.12) * w
-		nodes.append(_ink_piece(ground + side * half_w * randf_range(1.4, 2.2) + lift,
-			Basis(Vector3.UP, randf() * TAU), Vector3(r, 0.01, r * randf_range(1.0, 1.5)), white))
+		var drop := _ink_piece(ground + side * half_w * randf_range(1.4, 2.2) + lift,
+			Basis(Vector3.UP, randf() * TAU), Vector3(r, 0.01, r * randf_range(1.0, 1.5)), white)
+		drop.remove_meta("size")  # 먹방울은 끝 가늘기에서 뺀다
+		nodes.append(drop)
 	return nodes
 
 
@@ -317,6 +440,7 @@ func _ink_piece(pos: Vector3, rot: Basis, size: Vector3, white: bool) -> MeshIns
 	m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(m)
 	m.global_transform = Transform3D(rot, pos)
+	m.set_meta("size", size)
 	m.scale = size * Vector3(0.5, 1.0, 0.5)
 	m.create_tween().tween_property(m, "scale", size, 0.06) \
 		.set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)

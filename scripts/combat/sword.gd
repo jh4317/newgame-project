@@ -34,8 +34,33 @@ const SwordWave := preload("res://scripts/combat/sword_wave.gd")
 @export var ink_wave := 20.0
 @export var ink_wave_big := 30.0
 
+## 붓 단계: 먹 스타일 등급(5.2)이 오를수록 검기가 강해진다. 먹 획 강화와 같은 등급 하나로 움직인다.
+## 맞으면 등급이 깎이므로 붓도 함께 식는다. 아레나가 매 프레임 rank를 정한다 (-1 = 등급 없음)
+## [최소 등급, 이름, 검기 크기, 사거리, 검기 피해, 검기 먹, 갈래 수]
+const INK_STAGES := [
+	[-1, "기본 붓",  1.0,  1.0, 1.0,  1.0,  1],   # 없음·점
+	[1,  "젖은 붓",  1.15, 1.1, 1.1,  1.25, 1],   # 획·필
+	[3,  "짙은 붓",  1.25, 1.2, 1.25, 1.5,  1],   # 묵·농묵
+	[5,  "일필",     1.25, 1.2, 1.25, 1.5,  1],   # 일필휘지: 공격이 차지형 '획 긋기'로 바뀐다 (아래)
+]
+const SPLIT_ANGLE_DEG := 14.0
+const RANK_CHARGE := 5
+
+## 일필휘지 차지 '획 긋기': 누르고 있다가 떼면 조준 방향으로 직선 먹 획을 한 번에 긋는다.
+## 획에 닿은 적을 모두 베고(관통), 획은 바닥에 먹 자국으로 남아 먹 도형(ink_trail.gd)의 일부가 된다.
+## 차지 중에도 이동할 수 있지만 패링은 못 한다. 짧게 누르면 보통 휘두르기.
+## [최소 차지 시간, 획 길이, 획 굵기(배율), 피해, 묻는 먹(-1 = 가득)]
+const CHARGE_LEVELS := [
+	[0.25, 8.0,  1.0, 60.0,  40.0],
+	[0.6,  16.0, 1.4, 120.0, -1.0],
+]
+
+## 차지 획을 그었다 (아레나 연출용). level: 1 또는 2
+signal stroke_struck(from: Vector3, to: Vector3, level: int)
+
 var player: CharacterBody3D
 var combo := 0
+var rank := -1
 var _cooldown := 0.0
 var _since_swing := 10.0
 var _pivot: Node3D
@@ -44,6 +69,9 @@ var _blade_glow := 0.0
 var _trail_core_mat: StandardMaterial3D
 var _trail_ink_mat: StandardMaterial3D
 var _swing_dir := 1.0
+var _charging := false
+var _charge_t := 0.0
+var _charge_level := 0
 
 const SWING_TIME := 0.09   # 칼날이 휘둘러지는 시간 (궤적도 이 시간 동안 그려진다)
 const TRAIL_FADE := 0.2    # 궤적이 사라지는 시간
@@ -96,10 +124,111 @@ func _physics_process(delta: float) -> void:
 	_since_swing += delta
 	if _since_swing > combo_window:
 		combo = 0
-	if Input.is_action_pressed("attack") and _cooldown <= 0.0:
-		_swing()
+	if rank >= RANK_CHARGE:
+		_update_charge(delta)
+	else:
+		_charging = false
+		if Input.is_action_pressed("attack") and _cooldown <= 0.0:
+			_swing()
 	_blade_glow = move_toward(_blade_glow, 0.0, 30.0 * delta)
+	if _charging:
+		# 차지: 칼날에 먹이 모이며 점점 밝아지고, 단계가 오를 때 번쩍인다
+		var pulse := 0.5 + 0.5 * sin(_charge_t * 30.0)
+		_blade_glow = maxf(_blade_glow, 2.0 + 4.0 * _charge_level + 2.0 * pulse * _charge_level)
 	_blade_mat.emission_energy_multiplier = _blade_glow
+
+
+func is_charging() -> bool:
+	return _charging
+
+
+func _update_charge(delta: float) -> void:
+	if Input.is_action_pressed("attack"):
+		if not _charging:
+			if _cooldown > 0.0:
+				return
+			_charging = true
+			_charge_t = 0.0
+			_charge_level = 0
+		_charge_t += delta
+		var lv := 0
+		for i in CHARGE_LEVELS.size():
+			if _charge_t >= float(CHARGE_LEVELS[i][0]):
+				lv = i + 1
+		if lv > _charge_level:
+			_charge_level = lv
+			_blade_glow = 12.0  # 단계가 오르는 순간 번쩍
+		return
+	if not _charging:
+		return
+	_charging = false
+	if _charge_level == 0:
+		_swing()  # 짧게 눌렀다 떼면 보통 휘두르기
+	else:
+		_strike(_charge_level)
+		_cooldown = swing_interval * 1.5
+
+
+## 차지 획 긋기
+func _strike(level: int) -> void:
+	var cfg: Array = CHARGE_LEVELS[level - 1]
+	var length: float = cfg[1]
+	var width_mul: float = cfg[2]
+	var dmg: float = cfg[3]
+	var ink_amount: float = cfg[4]
+	var aim := _aim()
+	var feet := player.global_position
+	# 벽에 막히면 거기까지만 긋는다 (가슴 높이 레이캐스트)
+	var chest := feet + Vector3.UP * 1.0
+	var q := PhysicsRayQueryParameters3D.create(chest, chest + aim * length)
+	var ex: Array[RID] = [player.get_rid()]
+	for e in get_tree().get_nodes_in_group("enemy"):
+		ex.append((e as CollisionObject3D).get_rid())
+	q.exclude = ex
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if not hit.is_empty():
+		length = maxf(chest.distance_to(hit["position"]) - 0.3, 1.0)
+	var to := feet + aim * length
+
+	# 획에 닿은 적을 모두 벤다
+	var half := 0.38 * 1.7 * width_mul + 0.6  # 일필휘지 획 반폭(ink_trail TIERS 굵기 1.7) + 적 몸통 여유
+	var a := Vector2(feet.x, feet.z)
+	var b := Vector2(to.x, to.z)
+	for e in get_tree().get_nodes_in_group("enemy"):
+		var n := e as Node3D
+		var p := Vector2(n.global_position.x, n.global_position.z)
+		if absf(n.global_position.y - feet.y) > 2.5:
+			continue
+		if p.distance_to(Geometry2D.get_closest_point_to_segment(p, a, b)) > half:
+			continue
+		var ink: Node = e.get("ink")
+		var bonus := 0.0
+		if ink and bool(ink.call("is_ready")):
+			bonus = ink.call("consume")
+		var killed: bool = e.call("take_damage", dmg + bonus)
+		if killed:
+			player.call("heal", melee_kill_heal)
+		elif ink:
+			ink.call("add", float(ink.get("max_ink")) if ink_amount < 0.0 else ink_amount)
+		if bonus > 0.0:
+			ink_burst.emit(e, bonus, killed)
+		hit_enemy.emit(e, killed, true, "stroke")
+
+	# 바닥에 먹 획을 남긴다: 슬라이드 획에 이어 그어지므로 도형을 닫을 수 있다
+	var trail: Node = player.get("ink_trail")
+	if trail:
+		trail.call("draw_line", feet, to, width_mul)
+
+	# 칼날: 크게 한 번 내리긋기
+	_swing_dir = -_swing_dir
+	var from := deg_to_rad(90.0) * _swing_dir
+	_pivot.rotation.y = from
+	var tw := _pivot.create_tween()
+	tw.tween_property(_pivot, "rotation:y", -from, SWING_TIME * 0.8)
+	tw.tween_property(_pivot, "rotation:y", deg_to_rad(-35.0), 0.25).set_delay(0.08)
+	_blade_glow = 14.0
+	_tip_glints(-from, melee_range, true)
+	stroke_struck.emit(feet, to, level)
 
 
 func _swing() -> void:
@@ -159,15 +288,40 @@ func _melee_hits(finisher: bool, reach_mul: float) -> Array:
 	return hit
 
 
+## 지금 붓 단계 (INK_STAGES의 한 줄)
+func ink_stage() -> Array:
+	var cur: Array = INK_STAGES[0]
+	for s in INK_STAGES:
+		if rank >= int(s[0]):
+			cur = s
+	return cur
+
+
+func ink_stage_name() -> String:
+	return String(ink_stage()[1])
+
+
 func _launch_wave(finisher: bool, already_hit: Array) -> void:
+	var stage := ink_stage()
+	var size_mul: float = stage[2]
+	var range_mul: float = stage[3]
+	var dmg_mul: float = stage[4]
+	var ink_mul: float = stage[5]
+	var forks: int = stage[6]
 	var origin := player.global_position + Vector3.UP * 1.0 + _aim() * 0.8
-	var w := SwordWave.new()
-	w.setup(origin, _assisted_direction(origin), wave_speed, wave_range,
-		wave_damage * (1.5 if finisher else 1.0), finisher, player, already_hit)
+	var center_dir := _assisted_direction(origin)
 	var kind := "wave_big" if finisher else "wave"
-	var ink_amount := ink_wave_big if finisher else ink_wave
-	w.hit_enemy.connect(_on_wave_hit.bind(kind, ink_amount))
-	player.get_parent().add_child(w)
+	var base_dmg := wave_damage * (1.5 if finisher else 1.0) * dmg_mul
+	var base_ink := (ink_wave_big if finisher else ink_wave) * ink_mul
+	for k in forks:
+		var off := 0.0 if k == 0 else SPLIT_ANGLE_DEG * (1.0 if k == 1 else -1.0)
+		var side := k > 0
+		var w := SwordWave.new()
+		w.setup(origin, center_dir.rotated(Vector3.UP, deg_to_rad(off)), wave_speed, wave_range * range_mul,
+			base_dmg * (0.5 if side else 1.0), finisher, player, already_hit,
+			size_mul * (0.7 if side else 1.0))
+		w.hit_enemy.connect(_on_wave_hit.bind(kind, base_ink * (0.5 if side else 1.0)))
+		player.get_parent().add_child(w)
 
 
 func _on_wave_hit(e: Node, killed: bool, kind: String, ink_amount: float) -> void:

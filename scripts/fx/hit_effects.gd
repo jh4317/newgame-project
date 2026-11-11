@@ -84,7 +84,7 @@ func ink_pull(center: Vector3, from_points: Array) -> void:
 
 ## 회복 표시 (플레이어 머리 위)
 func heal_text(pos: Vector3, amount: float) -> void:
-	_pop_label(pos + Vector3(0.6, 2.0, 0.0), "+%d 회복" % int(round(amount)), 80, 0.8)
+	_pop_label(pos + Vector3(0.6, 2.0, 0.0), "+%d 먹" % int(round(amount)), 80, 0.8)
 
 
 ## 패링 성공 문구 (플레이어 머리 위)
