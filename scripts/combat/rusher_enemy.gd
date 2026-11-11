@@ -2,7 +2,7 @@ extends CharacterBody3D
 ## 돌격형 적 (GDD 6.2): 플레이어를 쫓아와 예고 뒤 직선으로 돌진해 벤다.
 ## 대응: 근접 패링으로 튕겨 내 경직시키거나, 슬라이드·대시로 돌진 경로에서 빠져나간다.
 ##
-## 상태: 추격 → 예고(멈춰서 조준, 바닥에 돌진 경로 표시) → 돌진 → 후딜레이 → 추격
+## 상태: 추격 → 예고(멈춰서 조준, 뿔이 점점 밝아짐) → 돌진 → 후딜레이 → 추격
 ##   - 예고 색: 흰색 = 패링 가능, 붉은색 = 패링 불가 (GDD 3.1, 6.1)
 ##   - 패링당하면 뒤로 튕겨 나며 경직. 경직 중에는 받는 대미지가 커진다 (GDD 3.1)
 ## 등급 (GDD 6.1):
@@ -62,8 +62,6 @@ var _visual: Node3D
 var _body_mesh: MeshInstance3D
 var _body_mat: StandardMaterial3D
 var _horn_mat: StandardMaterial3D
-var _lane: MeshInstance3D
-var _lane_mat: StandardMaterial3D
 var _stars: Node3D
 
 
@@ -242,7 +240,6 @@ func _set_state(s: State) -> void:
 	state = s
 	_state_time = 0.0
 	if s != State.WINDUP:
-		_lane.visible = false
 		_set_horn(Color(0.5, 0.5, 0.5), 0.3)
 
 
@@ -250,7 +247,6 @@ func _begin_windup() -> void:
 	_charge_count += 1
 	_unparryable = unparryable_every > 0 and _charge_count % unparryable_every == 0
 	_set_state(State.WINDUP)
-	_lane.visible = true
 
 
 func _begin_charge() -> void:
@@ -368,20 +364,6 @@ func _build_visuals() -> void:
 		band.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_visual.add_child(band)
 
-	# 바닥 돌진 경로 표시: 예고 동안 앞쪽으로 길게 차오른다 (탑뷰 가독성, GDD 2·6.1)
-	_lane = MeshInstance3D.new()
-	var lm := BoxMesh.new()
-	lm.size = Vector3(_size.x, 0.02, 1.0)
-	_lane.mesh = lm
-	_lane_mat = StandardMaterial3D.new()
-	_lane_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_lane_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_lane_mat.emission_enabled = true
-	_lane.material_override = _lane_mat
-	_lane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_lane.visible = false
-	_visual.add_child(_lane)
-
 	# 경직 표시: 머리 위를 도는 흰 점 세 개
 	_stars = Node3D.new()
 	_stars.position.y = _size.y + 0.6
@@ -410,13 +392,7 @@ func _update_telegraph() -> void:
 	var t := clampf(_state_time / telegraph_time, 0.0, 1.0)
 	var c := WARN_RED if _unparryable else Color(1, 1, 1)
 	_set_horn(c, lerpf(0.5, 8.0, t))
-	# 경로는 몸 기준 로컬 -Z로 뻗는다. 방향이 고정되면 몸도 그쪽을 본다
-	var length := charge_distance * lerpf(0.3, 1.0, t)
-	_lane.scale = Vector3(1.0, 1.0, length)
-	_lane.position = Vector3(0, 0.03, -length * 0.5)
-	_lane_mat.albedo_color = Color(c.r, c.g, c.b, lerpf(0.15, 0.45, t))
-	_lane_mat.emission = c
-	_lane_mat.emission_energy_multiplier = lerpf(0.5, 2.0, t)
+	# 방향이 고정되면 몸(뿔)이 돌진 방향을 정확히 가리킨다
 	if _state_time >= telegraph_time * 0.6:
 		rotation.y = atan2(-_charge_dir.x, -_charge_dir.z)
 
