@@ -13,11 +13,18 @@ extends Node3D
 @export var follow_sharpness := 8.0
 @export var base_fov := 45.0
 @export var fov_boost := 10.0
+@export var shake_strength := 1.0     # 설정에서 줄일 수 있게 (GDD 8.2)
+@export var shake_max_offset := 0.6   # 흔들림 최대 이동량 (m)
 
 var target: CharacterBody3D
 var camera: Camera3D
 var _focus := Vector3.ZERO
 var _aim_point := Vector3.ZERO
+var _fov_smoothed := 45.0
+var _fov_kick := 0.0
+var _trauma := 0.0
+var _noise := FastNoiseLite.new()
+var _t := 0.0
 
 
 func _ready() -> void:
@@ -25,6 +32,18 @@ func _ready() -> void:
 	camera.fov = base_fov
 	camera.far = 300.0
 	add_child(camera)
+	_fov_smoothed = base_fov
+	_noise.frequency = 2.0
+
+
+## 카메라 흔들림. amount 0~1을 누적하고 시간이 지나면 줄어든다 (흔들림 = trauma²)
+func shake(amount: float) -> void:
+	_trauma = minf(1.0, _trauma + amount)
+
+
+## 순간적으로 시야를 넓혔다가 돌아온다 (대시 등)
+func fov_kick(amount: float) -> void:
+	_fov_kick = maxf(_fov_kick, amount)
 
 
 func activate(on: bool) -> void:
@@ -76,4 +95,12 @@ func _process(delta: float) -> void:
 	camera.look_at(_focus, Vector3.UP)
 
 	var speed_t := clampf((vel.length() - 12.0) / 8.0, 0.0, 1.0)
-	camera.fov = lerpf(camera.fov, base_fov + fov_boost * speed_t, 1.0 - exp(-5.0 * delta))
+	_fov_smoothed = lerpf(_fov_smoothed, base_fov + fov_boost * speed_t, 1.0 - exp(-5.0 * delta))
+	_fov_kick = move_toward(_fov_kick, 0.0, 30.0 * delta)
+	camera.fov = _fov_smoothed + _fov_kick
+
+	_t += delta
+	_trauma = maxf(0.0, _trauma - 1.6 * delta)
+	var s := _trauma * _trauma * shake_strength
+	camera.h_offset = _noise.get_noise_2d(_t * 40.0, 0.0) * shake_max_offset * s
+	camera.v_offset = _noise.get_noise_2d(0.0, _t * 40.0) * shake_max_offset * s

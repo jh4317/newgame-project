@@ -3,6 +3,7 @@ extends CanvasLayer
 
 var player: CharacterBody3D
 var mode_name := ""
+var kills := 0
 var _info: Label
 var _crosshair: Label
 var _top_speed := 0.0
@@ -18,7 +19,7 @@ func _ready() -> void:
 	add_child(_crosshair)
 
 	var help := _make_label(15)
-	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후 점프 = 버니합) · Shift 슬라이드 · E 대시 · V 시점 전환 · R 리스폰 · Esc 마우스 해제"
+	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후 = 버니합) · Shift 슬라이드 · E 대시 · F/우클릭 패링(흰 탄만) · V 시점 · R 리스폰"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	help.offset_left = 16
 	help.offset_right = 1200
@@ -40,7 +41,10 @@ func _process(_delta: float) -> void:
 	if stamina < 3.0:
 		dots += "(회복 %d%%)" % int((stamina - pips) * 100.0)
 	var chain: int = player.get("bhop_chain")
-	_info.text = "속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n스태미나(벽 점프·대시): %s\n버니합 연속: %d\n높이: %4.1f m\n시점: %s" % [
+	var hp: float = player.get("health")
+	_info.text = ("체력 %d / 100\n패링: %s  (성공 %d · 처치 %d)\n\n속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n"
+		+ "스태미나(벽 점프·대시): %s\n버니합 연속: %d\n높이: %4.1f m\n시점: %s") % [
+		int(hp), player.call("parry_status"), player.get("parry_count"), kills,
 		speed, _top_speed, player.call("state_name"), dots, chain, player.global_position.y, mode_name]
 	_crosshair.visible = mode_name == "숄더뷰"
 	_crosshair.position = _crosshair.get_viewport_rect().size * 0.5 - _crosshair.size * 0.5

@@ -13,6 +13,8 @@ static func ensure_actions() -> void:
 	_add_keys("jump", [KEY_SPACE])
 	_add_keys("slide", [KEY_SHIFT, KEY_C])
 	_add_keys("dash", [KEY_E])
+	_add_keys("parry", [KEY_F])
+	_add_mouse("parry", MOUSE_BUTTON_RIGHT)
 	_add_keys("toggle_camera", [KEY_V])
 	_add_keys("restart", [KEY_R])
 
@@ -23,6 +25,7 @@ static func ensure_actions() -> void:
 	_add_joy_button("jump", JOY_BUTTON_A)
 	_add_joy_button("slide", JOY_BUTTON_B)
 	_add_joy_button("dash", JOY_BUTTON_X)
+	_add_joy_button("parry", JOY_BUTTON_RIGHT_SHOULDER)
 	_add_joy_button("toggle_camera", JOY_BUTTON_BACK)
 	_add_joy_button("restart", JOY_BUTTON_Y)
 
@@ -38,6 +41,13 @@ static func _add_keys(action: String, keys: Array) -> void:
 		var ev := InputEventKey.new()
 		ev.physical_keycode = k
 		InputMap.action_add_event(action, ev)
+
+
+static func _add_mouse(action: String, button: MouseButton) -> void:
+	_ensure(action)
+	var ev := InputEventMouseButton.new()
+	ev.button_index = button
+	InputMap.action_add_event(action, ev)
 
 
 static func _add_joy_button(action: String, button: JoyButton) -> void:

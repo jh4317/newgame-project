@@ -1,5 +1,5 @@
 extends Node3D
-## 1단계 이동 프로토타입: 회색 박스 아레나 (GDD 10.2).
+## 1~2단계 프로토타입: 회색 박스 아레나 + 사격형 적과 패링 (GDD 10.2).
 ## 아레나·플레이어·카메라·HUD를 코드로 만든다. V 키로 탑뷰/숄더뷰를 바꿔 두 시점을 비교한다.
 ##
 ## 좌표: +X 동쪽, -Z 북쪽(탑뷰 화면 위쪽). 카메라는 남쪽에서 내려다본다.
@@ -16,8 +16,25 @@ const TopDownRig := preload("res://scripts/camera/top_down_camera_rig.gd")
 const ShoulderRig := preload("res://scripts/camera/shoulder_camera_rig.gd")
 const Hud := preload("res://scripts/ui/movement_hud.gd")
 const InputSetup := preload("res://scripts/systems/input_setup.gd")
+const ShooterEnemy := preload("res://scripts/combat/shooter_enemy.gd")
+const CombatFx := preload("res://scripts/systems/combat_fx.gd")
+const SpeedLines := preload("res://scripts/fx/speed_lines.gd")
 
 const SPAWN := Vector3(0, 0.1, 22)
+## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급)
+## 중앙·동쪽·굴뚝 A 위 발판(4.5 m)은 하급, 서쪽은 중급(패링 불가 탄 사용)
+const ENEMY_SPOTS := [
+	[Vector3(0, 0, 0), 0],
+	[Vector3(-25, 0, -12), 1],
+	[Vector3(26, 0, -6), 0],
+	[Vector3(36, 4.5, -27), 0],
+]
+
+var fx: CanvasLayer
+var speed_lines: CanvasLayer
+var enemies: Array[Node] = []
+var kills := 0
+var _active_rig: Node3D
 
 var player: CharacterBody3D
 var top_rig: Node3D
@@ -48,12 +65,62 @@ func _ready() -> void:
 	add_child(shoulder_rig)
 	shoulder_rig.target = player
 
+	fx = CombatFx.new()
+	add_child(fx)
+	speed_lines = SpeedLines.new()
+	add_child(speed_lines)
+	speed_lines.player = player
+
+	for spot in ENEMY_SPOTS:
+		var e := ShooterEnemy.new()
+		e.position = spot[0]
+		e.tier = spot[1]
+		add_child(e)
+		e.target = player
+		e.died.connect(_on_enemy_died)
+		enemies.append(e)
+
 	hud = Hud.new()
 	add_child(hud)
 	hud.player = player
 	player.respawned.connect(hud.reset_top_speed)
+	player.parried.connect(_on_parried)
+	# 속도감 연출: 동작마다 카메라 흔들림·시야 킥 (GDD 4.1)
+	player.dashed.connect(func(): _feedback(0.25, 8.0))
+	player.wall_jumped.connect(func(): _feedback(0.12, 0.0))
+	player.landed.connect(_on_landed)
+	player.damaged.connect(func(_amount: float): _feedback(0.3, 0.0))
 
 	_set_camera_mode(false)
+
+
+func _feedback(trauma: float, fov: float) -> void:
+	if _active_rig == null:
+		return
+	if trauma > 0.0:
+		_active_rig.call("shake", trauma)
+	if fov > 0.0:
+		_active_rig.call("fov_kick", fov)
+
+
+func _on_landed(fall_speed: float) -> void:
+	# 높은 곳에서 떨어질수록 세게 (점프 한 번 착지 ≈ 11 m/s는 흔들지 않음)
+	if fall_speed > 14.0:
+		_feedback(clampf((fall_speed - 14.0) / 16.0, 0.1, 0.5), 0.0)
+
+
+func _on_parried(_projectile: Node) -> void:
+	fx.call("hitstop", 0.08)
+	fx.call("impact_frame", "parry", 2, true)
+	_feedback(0.35, 0.0)
+
+
+func _on_enemy_died(_enemy: Node) -> void:
+	kills += 1
+	hud.set("kills", kills)
+	fx.call("hitstop", 0.05)
+	fx.call("impact_frame", "kill", 3, false)
+	_feedback(0.45, 0.0)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -68,6 +135,9 @@ func _set_camera_mode(shoulder: bool) -> void:
 	shoulder_rig.call("activate", shoulder)
 	player.set("camera_rig", rig)
 	hud.set("mode_name", rig.call("mode_name"))
+	_active_rig = rig
+	if speed_lines:
+		speed_lines.set("camera_rig", rig)
 
 
 # ---------------------------------------------------------------- 환경
@@ -85,6 +155,12 @@ func _build_environment() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 0.8
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	# 블룸: 밝기 1을 넘는 발광(탄, 적의 눈, 패링 부채꼴)만 번지게 (GDD 9.1)
+	env.glow_enabled = true
+	env.glow_hdr_threshold = 1.0
+	env.glow_intensity = 1.0
+	env.glow_bloom = 0.05
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
 	var world_env := WorldEnvironment.new()
 	world_env.environment = env
 	add_child(world_env)

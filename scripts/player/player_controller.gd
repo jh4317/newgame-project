@@ -7,6 +7,11 @@ extends CharacterBody3D
 ## 바닥에 서 있는 동안에만 회복한다(공중에서는 회복 없음).
 
 signal respawned
+signal parried(projectile: Node)
+signal damaged(amount: float)
+signal dashed
+signal wall_jumped
+signal landed(fall_speed: float)
 
 enum State { GROUND, SLIDE, AIR, WALL, DASH }
 
@@ -49,6 +54,22 @@ enum State { GROUND, SLIDE, AIR, WALL, DASH }
 @export var dash_time := 0.15  # 30 m/s × 0.15초 = 4.5 m
 @export var dash_cooldown := 0.1
 
+@export_group("Combat")
+@export var max_health := 100.0
+@export var parry_window := 0.15        # GDD 3.4: 판정 시간
+@export var parry_radius := 2.0         # 판정 반경 (m)
+@export var parry_angle_deg := 90.0     # 조준 방향 기준 부채꼴 각도
+@export var parry_whiff_cooldown := 0.35
+@export var parry_speed_mul := 1.5
+@export var parry_damage_mul := 2.0
+@export var parry_heal := 10.0
+@export var parry_aim_assist_deg := 25.0  # 이 각도 안의 적에게 반사탄을 보정
+
+@export_group("Speed FX")
+@export var afterimage_speed := 17.0     # 이 속도 이상(또는 대시 중)이면 잔상
+@export var afterimage_interval := 0.035
+@export var afterimage_life := 0.25
+
 const CAPSULE_RADIUS := 0.4
 const CAPSULE_HEIGHT := 1.8
 const KILL_Y := -20.0
@@ -59,6 +80,15 @@ var stamina := 3.0
 var facing := Vector3(0, 0, -1)
 
 var bhop_chain := 0  # 연속 버니합 횟수 (HUD 표시용)
+var health := 100.0
+var parry_count := 0
+var _parry_left := 0.0
+var _parry_cooldown_left := 0.0
+var _parry_hit := false
+var _parry_fan: MeshInstance3D
+var _last_air_vy := 0.0
+var _ghost_timer := 0.0
+var _body_mesh_node: MeshInstance3D
 var _time_on_floor := 0.0
 var _dash_left := 0.0
 var _dash_cooldown_left := 0.0
@@ -77,8 +107,10 @@ var _dots: Array[MeshInstance3D] = []
 
 
 func _ready() -> void:
+	add_to_group("player")
 	_spawn_point = global_position
 	stamina = stamina_max
+	health = max_health
 	floor_snap_length = 0.3
 	_build_collision()
 	_build_visual()
@@ -105,6 +137,21 @@ func state_name() -> String:
 	return "공중"
 
 
+func parry_status() -> String:
+	if _parry_left > 0.0:
+		return "판정 중"
+	if _parry_cooldown_left > 0.0:
+		return "헛침 (%.2f초)" % _parry_cooldown_left
+	return "준비"
+
+
+func take_damage(amount: float) -> void:
+	health -= amount
+	damaged.emit(amount)
+	if health <= 0.0:
+		respawn()
+
+
 ## 지금 바로 쓸 수 있는 스태미나 칸 수
 func stamina_pips() -> int:
 	return int(floor(stamina + 0.001))
@@ -114,7 +161,10 @@ func respawn() -> void:
 	global_position = _spawn_point
 	velocity = Vector3.ZERO
 	stamina = stamina_max
+	health = max_health
 	_dash_left = 0.0
+	_parry_left = 0.0
+	_parry_cooldown_left = 0.0
 	state = State.AIR
 	respawned.emit()
 
@@ -124,6 +174,8 @@ func _physics_process(delta: float) -> void:
 		respawn()
 		return
 
+	_update_parry(delta)
+
 	var input_dir := _input_direction()
 	if Input.is_action_just_pressed("jump"):
 		_since_jump_pressed = 0.0
@@ -132,6 +184,8 @@ func _physics_process(delta: float) -> void:
 
 	var on_floor := is_on_floor()
 	if on_floor:
+		if _since_floor > 0.05:
+			landed.emit(-_last_air_vy)
 		_time_on_floor = 0.0 if _since_floor > 0.0 else _time_on_floor + delta
 		_since_floor = 0.0
 		stamina = minf(stamina_max, stamina + delta / stamina_regen_time)
@@ -175,6 +229,7 @@ func _physics_process(delta: float) -> void:
 		vy -= gravity * delta
 		if state == State.WALL:
 			vy = maxf(vy, -wall_slide_speed)
+		_last_air_vy = vy
 
 	# 점프: 입력 버퍼 + 코요테 타임. 슬라이드 중 점프하면 속도를 그대로 가져간다.
 	if _since_jump_pressed <= jump_buffer_time:
@@ -196,11 +251,68 @@ func _physics_process(delta: float) -> void:
 			stamina -= wall_jump_cost
 			_since_wall = 10.0
 			_consume_jump()
+			wall_jumped.emit()
 
 	velocity = Vector3(hvel.x, vy, hvel.z)
 	move_and_slide()
 	_track_wall(delta)
 	_update_visual(delta, input_dir)
+
+
+# ---------------------------------------------------------------- 패링 (GDD 3.1)
+
+func _update_parry(delta: float) -> void:
+	_parry_cooldown_left = maxf(0.0, _parry_cooldown_left - delta)
+	if Input.is_action_just_pressed("parry") and _parry_left <= 0.0 and _parry_cooldown_left <= 0.0:
+		_parry_left = parry_window
+		_parry_hit = false
+	if _parry_left <= 0.0:
+		_parry_fan.visible = false
+		return
+	_parry_fan.visible = true
+	_try_parry()
+	_parry_left -= delta
+	if _parry_left <= 0.0 or _parry_hit:
+		_parry_left = 0.0
+		_parry_fan.visible = false
+		if not _parry_hit:
+			_parry_cooldown_left = parry_whiff_cooldown  # 헛치면 난발 방지 후딜레이
+
+
+func _try_parry() -> void:
+	var center := global_position + Vector3.UP * 1.0
+	var half_angle := deg_to_rad(parry_angle_deg) * 0.5
+	for node in get_tree().get_nodes_in_group("projectile"):
+		var p := node as Node3D
+		if p == null or bool(p.get("reflected")) or not bool(p.get("parryable")):
+			continue  # 붉은 탄(패링 불가)은 되받아칠 수 없다
+		var to := p.global_position - center
+		if to.length() > parry_radius + 0.3:
+			continue
+		var flat := Vector3(to.x, 0.0, to.z)
+		if flat.length() > 0.2 and facing.angle_to(flat.normalized()) > half_angle:
+			continue
+		p.call("reflect", _reflect_direction(p.global_position), parry_speed_mul, parry_damage_mul)
+		_parry_hit = true
+		parry_count += 1
+		health = minf(max_health, health + parry_heal)
+		parried.emit(p)
+
+
+## 조준 방향으로 되돌리되, 그 근처(보정 각도 안)에 적이 있으면 가장 가까운 적을 향한다
+func _reflect_direction(from: Vector3) -> Vector3:
+	var aim := Vector3(facing.x, 0.0, facing.z).normalized()
+	var best_dir := aim
+	var best_dist := INF
+	for e in get_tree().get_nodes_in_group("enemy"):
+		var to: Vector3 = e.call("aim_point") - from
+		var flat := Vector3(to.x, 0.0, to.z)
+		if flat.length() < 0.5 or rad_to_deg(aim.angle_to(flat.normalized())) > parry_aim_assist_deg:
+			continue
+		if to.length() < best_dist:
+			best_dist = to.length()
+			best_dir = to.normalized()
+	return best_dir
 
 
 func _start_dash(hvel: Vector3, input_dir: Vector3) -> void:
@@ -209,6 +321,8 @@ func _start_dash(hvel: Vector3, input_dir: Vector3) -> void:
 	_dash_exit_speed = maxf(hvel.length(), run_speed)
 	_dash_left = dash_time
 	state = State.DASH
+	_ghost_timer = 0.0
+	dashed.emit()
 
 
 func _consume_jump() -> void:
@@ -311,6 +425,7 @@ func _build_visual() -> void:
 	body.position.y = CAPSULE_HEIGHT * 0.5
 	body.material_override = _flat(Color(0.92, 0.92, 0.95))
 	_visual.add_child(body)
+	_body_mesh_node = body
 
 	# 바라보는 방향 표시 (붉은색은 '패링 불가' 경고용이라 쓰지 않는다)
 	var nose := MeshInstance3D.new()
@@ -320,6 +435,23 @@ func _build_visual() -> void:
 	nose.position = Vector3(0, 1.4, -0.45)
 	nose.material_override = _flat(Color(0.25, 0.8, 1.0))
 	_visual.add_child(nose)
+
+	# 패링 판정 부채꼴: 판정이 열려 있는 동안만 보인다
+	_parry_fan = MeshInstance3D.new()
+	_parry_fan.mesh = _make_fan_mesh(parry_radius, deg_to_rad(parry_angle_deg))
+	_parry_fan.position.y = 1.0
+	var fan_mat := StandardMaterial3D.new()
+	fan_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	fan_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	fan_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	fan_mat.albedo_color = Color(1, 1, 1, 0.35)
+	fan_mat.emission_enabled = true
+	fan_mat.emission = Color(1, 1, 1)
+	fan_mat.emission_energy_multiplier = 2.0
+	_parry_fan.material_override = fan_mat
+	_parry_fan.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_parry_fan.visible = false
+	_visual.add_child(_parry_fan)
 
 	# 발밑 그림자: 탑뷰에서 현재 높이를 읽게 해 준다 (GDD 3.3)
 	_shadow = MeshInstance3D.new()
@@ -388,6 +520,48 @@ func _update_visual(delta: float, input_dir: Vector3) -> void:
 		var dot := _dots[i]
 		dot.visible = i < stamina_pips()
 		dot.global_position = global_position + Vector3((i - 1) * 0.3, 0.08, 0.75)
+
+	# 고속 잔상: 흰 반투명 실루엣이 짧게 남았다 사라진다 (블룸으로 살짝 번짐)
+	if state == State.DASH or horizontal_speed() >= afterimage_speed:
+		_ghost_timer -= delta
+		if _ghost_timer <= 0.0:
+			_ghost_timer = afterimage_interval
+			_spawn_afterimage()
+
+
+func _spawn_afterimage() -> void:
+	if get_parent() == null:
+		return
+	var ghost := MeshInstance3D.new()
+	ghost.mesh = _body_mesh_node.mesh
+	ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(1, 1, 1, 0.35)
+	m.emission_enabled = true
+	m.emission = Color(1, 1, 1)
+	m.emission_energy_multiplier = 1.5
+	ghost.material_override = m
+	get_parent().add_child(ghost)
+	ghost.global_transform = _body_mesh_node.global_transform
+	var tw := ghost.create_tween()
+	tw.tween_property(m, "albedo_color:a", 0.0, afterimage_life)
+	tw.tween_callback(ghost.queue_free)
+
+
+## -Z 방향을 중심으로 펼쳐진 수평 부채꼴 메시
+func _make_fan_mesh(radius: float, angle: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var steps := 12
+	for i in steps:
+		var a0 := -angle * 0.5 + angle * i / steps
+		var a1 := -angle * 0.5 + angle * (i + 1) / steps
+		st.add_vertex(Vector3.ZERO)
+		st.add_vertex(Vector3(sin(a0), 0.0, -cos(a0)) * radius)
+		st.add_vertex(Vector3(sin(a1), 0.0, -cos(a1)) * radius)
+	return st.commit()
 
 
 func _flat(color: Color) -> StandardMaterial3D:
