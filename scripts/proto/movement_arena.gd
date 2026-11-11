@@ -3,9 +3,9 @@ extends Node3D
 ## 아레나·플레이어·카메라·HUD를 코드로 만든다. V 키로 탑뷰/숄더뷰를 바꿔 두 시점을 비교한다.
 ##
 ## 좌표: +X 동쪽, -Z 북쪽(탑뷰 화면 위쪽). 카메라는 남쪽에서 내려다본다.
-## 구역:
+## 바닥 120 × 120 m. 구역:
 ##   - 시작 지점: 남쪽 중앙
-##   - 슬라이드 레인: 남서쪽의 긴 통로 (40 m)
+##   - 슬라이드 레인: 남서쪽의 긴 통로 (60 m)
 ##   - 계단 블록: 중앙 북쪽 (1.8 → 3.5 → 5 m)
 ##   - 벽 점프 굴뚝 A: 북동쪽, 위층 발판 4.5 m
 ##   - 벽 점프 굴뚝 B: 북서쪽(서쪽 외벽과 짝), 위층 발판 6 m
@@ -43,20 +43,21 @@ const STYLE := {
 	"kill": ["처치", 100.0],
 }
 
-const SPAWN := Vector3(0, 0.1, 22)
+const ARENA_HALF := 60.0  ## 바닥 한 변의 절반 (m)
+const SPAWN := Vector3(0, 0.1, 33)
 ## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급)
 ## 중앙·동쪽·굴뚝 A 위 발판(4.5 m)은 하급, 서쪽은 중급(패링 불가 탄 사용)
 const ENEMY_SPOTS := [
 	[Vector3(0, 0, 0), 0],
-	[Vector3(-25, 0, -12), 1],
-	[Vector3(26, 0, -6), 0],
-	[Vector3(36, 4.5, -27), 0],
+	[Vector3(-37.5, 0, -18), 1],
+	[Vector3(39, 0, -9), 0],
+	[Vector3(56, 4.5, -39), 0],
 ]
 ## 돌격형 적 위치와 등급: 열린 바닥에 배치 (중급은 패링 불가 돌진을 섞는다)
 const RUSHER_SPOTS := [
-	[Vector3(8, 0.1, 6), 0],
-	[Vector3(-6, 0.1, -26), 0],
-	[Vector3(28, 0.1, 8), 1],
+	[Vector3(12, 0.1, 9), 0],
+	[Vector3(-9, 0.1, -39), 0],
+	[Vector3(42, 0.1, 12), 1],
 ]
 
 var fx: CanvasLayer
@@ -354,7 +355,7 @@ func _build_environment() -> void:
 	sun.rotation_degrees = Vector3(-55, -35, 0)
 	sun.light_energy = 1.1
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 90.0
+	sun.directional_shadow_max_distance = 130.0
 	add_child(sun)
 
 
@@ -386,40 +387,41 @@ func _checker(c1: Color, c2: Color, scale: float) -> StandardMaterial3D:
 # ---------------------------------------------------------------- 아레나
 
 func _build_arena() -> void:
-	# 바닥 80 × 80 m (윗면 y = 0)
-	_box(Vector3(0, -0.5, 0), Vector3(80, 1, 80), _mat_floor)
+	var h := ARENA_HALF
+	# 바닥 120 × 120 m (윗면 y = 0)
+	_box(Vector3(0, -0.5, 0), Vector3(h * 2.0, 1, h * 2.0), _mat_floor)
 
 	# 외벽: 카메라 쪽(남쪽)은 낮게 해서 시야를 가리지 않는다 (GDD 7.3)
-	_block(0, -40.5, 82, 1, 10, _mat_wall)      # 북
-	_block(-40.5, 0, 1, 80, 10, _mat_climb)     # 서 (굴뚝 B의 한쪽 벽)
-	_block(40.5, 0, 1, 80, 10, _mat_wall)       # 동
-	_block(0, 40.5, 82, 1, 1.2, _mat_wall)      # 남 (낮은 벽)
+	_block(0, -h - 0.5, h * 2.0 + 2.0, 1, 10, _mat_wall)      # 북
+	_block(-h - 0.5, 0, 1, h * 2.0, 10, _mat_climb)           # 서 (굴뚝 B의 한쪽 벽)
+	_block(h + 0.5, 0, 1, h * 2.0, 10, _mat_wall)             # 동
+	_block(0, h + 0.5, h * 2.0 + 2.0, 1, 1.2, _mat_wall)      # 남 (낮은 벽)
 
-	# 슬라이드 레인: 폭 3 m, 길이 40 m의 낮은 벽 통로
-	_block(-14, 29.5, 40, 1, 1.2, _mat_wall)
-	_block(-14, 33.5, 40, 1, 1.2, _mat_wall)
+	# 슬라이드 레인: 폭 3 m, 길이 60 m의 낮은 벽 통로
+	_block(-24, 49.5, 60, 1, 1.2, _mat_wall)
+	_block(-24, 53.5, 60, 1, 1.2, _mat_wall)
 
 	# 계단 블록: 점프 한 번(2.5 m)으로 한 칸씩 오른다
-	_block(-4, -12, 4, 4, 1.8, _mat_platform)
-	_block(0, -12, 4, 4, 3.5, _mat_platform)
-	_block(5, -12, 6, 6, 5.0, _mat_platform)
+	_block(-4, -30, 4, 4, 1.8, _mat_platform)
+	_block(0, -30, 4, 4, 3.5, _mat_platform)
+	_block(5, -30, 6, 6, 5.0, _mat_platform)
 
 	# 굴뚝 A (북동): 3.5 m 간격의 두 벽 사이를 벽 점프로 오른 뒤 동쪽 발판(4.5 m)으로
-	_block(24, -26, 12, 1, 12, _mat_climb)
-	_block(24, -21.5, 12, 1, 12, _mat_climb)
-	_block(35, -24, 10, 14, 4.5, _mat_platform)
+	_block(44, -38, 12, 1, 12, _mat_climb)
+	_block(44, -33.5, 12, 1, 12, _mat_climb)
+	_block(h - 5.0, -36, 10, 14, 4.5, _mat_platform)
 
 	# 굴뚝 B (북서): 서쪽 외벽과 안쪽 벽 사이 3 m 틈을 올라 북쪽 발판(6 m)으로
-	_block(-36.5, -20.5, 1, 13, 12, _mat_climb)
-	_block(-35, -33, 10, 12, 6, _mat_platform)
+	_block(-h + 3.5, -40.5, 1, 13, 12, _mat_climb)
+	_block(-h + 5.0, -h + 7.0, 10, 12, 6, _mat_platform)
 
 	# 기둥: 벽 점프·우회 연습
-	for p in [Vector2(-15, -2), Vector2(15, -2), Vector2(-15, 12), Vector2(15, 12)]:
+	for p in [Vector2(-22.5, -3), Vector2(22.5, -3), Vector2(-22.5, 18), Vector2(22.5, 18)]:
 		_block(p.x, p.y, 2, 2, 9, _mat_climb)
 
 	# 슬라이드 점프 연습: 4 m 간격의 낮은 단상 두 개
-	_block(22, 22, 8, 8, 1.0, _mat_platform)
-	_block(34, 22, 8, 8, 1.0, _mat_platform)
+	_block(34, 40, 8, 8, 1.0, _mat_platform)
+	_block(46, 40, 8, 8, 1.0, _mat_platform)
 
 
 ## 바닥(y=0)에 놓인 블록. (x, z)는 중심, h는 높이.
