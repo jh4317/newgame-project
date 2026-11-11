@@ -37,7 +37,7 @@ func _ready() -> void:
 	add_child(_crosshair)
 
 	var help := _make_label(15)
-	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후=버니합) · Shift 슬라이드 · E 대시 · 좌클릭 검(근접+검기, 3타 콤보) · F/우클릭 패링 · V 시점 · R 리스폰"
+	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후=버니합) · Ctrl 슬라이드 · Shift 대시 · 좌클릭 검(근접+검기, 3타 콤보) · F/우클릭 패링 · V 시점 · R 리스폰"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	help.offset_left = 16
 	help.offset_right = 1200
