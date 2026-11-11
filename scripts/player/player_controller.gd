@@ -69,6 +69,11 @@ enum State { GROUND, SLIDE, AIR, WALL, DASH }
 @export var parry_heal := 10.0
 @export var parry_aim_assist_deg := 25.0  # 이 각도 안의 적에게 반사탄을 보정
 
+@export_group("Recoverable Health")  ## GDD 5.1: 피격 대미지 일부를 반격으로 되찾는다
+@export var recoverable_ratio := 0.7      # 받은 대미지 중 되찾을 수 있는 비율
+@export var recoverable_window := 2.0     # 마지막 피격 또는 되찾기 뒤 이 시간 동안 유지
+@export var recoverable_decay := 30.0     # 그 뒤 초당 이만큼 사라진다
+
 @export_group("Speed FX")
 @export var afterimage_speed := 17.0     # 이 속도 이상(또는 대시 중)이면 잔상
 @export var afterimage_interval := 0.035
@@ -85,6 +90,8 @@ var facing := Vector3(0, 0, -1)
 
 var bhop_chain := 0  # 연속 버니합 횟수 (HUD 표시용)
 var health := 100.0
+var recoverable := 0.0  ## 반격하면 되찾을 수 있는 체력 (health 위에 쌓인다)
+var _recoverable_hold := 0.0
 var parry_count := 0
 var _parry_left := 0.0
 var _parry_cooldown_left := 0.0
@@ -163,9 +170,28 @@ func take_damage(amount: float) -> void:
 	if is_invulnerable():
 		return
 	health -= amount
+	recoverable = minf(recoverable + amount * recoverable_ratio, max_health - maxf(health, 0.0))
+	_recoverable_hold = recoverable_window
 	damaged.emit(amount)
 	if health <= 0.0:
 		respawn()
+
+
+## 공격을 맞혔다: 회복 가능 체력에서 amount만큼 되찾는다. 실제로 되찾은 양을 돌려준다
+func recover(amount: float) -> float:
+	var got := minf(amount, recoverable)
+	if got <= 0.0:
+		return 0.0
+	health += got
+	recoverable -= got
+	_recoverable_hold = recoverable_window
+	return got
+
+
+## 체력 회복(근접 처치·패링·끌어당김): 회복 가능 체력을 먼저 채운 것으로 친다
+func heal(amount: float) -> void:
+	health = minf(max_health, health + amount)
+	recoverable = minf(recoverable, max_health - health)
 
 
 ## 지금 바로 쓸 수 있는 스태미나 칸 수
@@ -178,6 +204,7 @@ func respawn() -> void:
 	velocity = Vector3.ZERO
 	stamina = stamina_max
 	health = max_health
+	recoverable = 0.0
 	_dash_left = 0.0
 	_invuln_left = 0.0
 	_parry_left = 0.0
@@ -212,6 +239,9 @@ func _physics_process(delta: float) -> void:
 		_since_floor += delta
 	_dash_cooldown_left = maxf(0.0, _dash_cooldown_left - delta)
 	_invuln_left = maxf(0.0, _invuln_left - delta)
+	_recoverable_hold -= delta
+	if _recoverable_hold <= 0.0:
+		recoverable = maxf(0.0, recoverable - recoverable_decay * delta)
 
 	var hvel := Vector3(velocity.x, 0.0, velocity.z)
 
@@ -349,7 +379,7 @@ func try_parry_melee(enemy: Node) -> bool:
 func _parry_success(source: Node) -> void:
 	_parry_hit = true
 	parry_count += 1
-	health = minf(max_health, health + parry_heal)
+	heal(parry_heal)
 	parried.emit(source)
 
 

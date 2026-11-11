@@ -30,6 +30,15 @@ const PULL_GAP := 2.6          # 중심 적에게서 이만큼 떨어진 자리�
 const PULL_HEAL := 25.0
 const PULL_CHAIN_INK := 30.0   # 끌려온 적에게도 먹이 묻는다
 
+## 적중마다 되찾는 회복 가능 체력 (GDD 5.1). 근접이 원거리보다 많다
+const RECOVER_ON_HIT := {
+	"melee": 15.0,
+	"finisher": 24.0,
+	"wave": 3.0,
+	"wave_big": 4.0,
+	"reflect": 12.0,
+}
+
 ## 먹 스타일 점수 (GDD 5.2)
 const STYLE := {
 	"melee": ["베기", 40.0],
@@ -168,6 +177,8 @@ func _on_sword_hit(enemy: Node, killed: bool, melee: bool, kind: String) -> void
 	dir.y = 0.0
 	dir = dir.normalized() if dir.length() > 0.01 else Vector3(0, 0, -1)
 	_style(kind)
+	# 반격으로 회복 가능 체력을 되찾는다: 가까이 붙어 벨수록 많이 (GDD 5.1)
+	_recover(float(RECOVER_ON_HIT.get(kind, 0.0)))
 	var sword: Node = player.get("sword")
 	match kind:
 		"finisher":
@@ -218,6 +229,7 @@ func _style(id: String, mul := 1.0, label_suffix := "") -> void:
 ## 반사탄이 적에게 맞았다 (projectile.gd → 그룹 "combat_events")
 func on_reflect_hit(enemy: Node, _killed: bool, ink_full: bool) -> void:
 	_style("reflect")
+	_recover(float(RECOVER_ON_HIT["reflect"]))
 	if ink_full:
 		_ink_pull(enemy)
 
@@ -242,14 +254,19 @@ func _ink_pull(center_enemy: Node) -> void:
 		if ink:
 			ink.call("add", PULL_CHAIN_INK)
 	ink_pulls += 1
-	var heal := minf(PULL_HEAL, float(player.get("max_health")) - float(player.get("health")))
-	player.set("health", float(player.get("health")) + maxf(heal, 0.0))
+	player.call("heal", PULL_HEAL)
 	hit_fx.call("ink_pull", center, from_points)
 	hit_fx.call("heal_text", player.global_position, PULL_HEAL)
 	_style("pull")
 	fx.call("hitstop", 0.06)
 	_big_moment(center + Vector3.UP * 1.2, 0.12, -6.0, 130.0)
 	_feedback(0.35, 0.0)
+
+
+func _recover(amount: float) -> void:
+	var got: float = player.call("recover", amount)
+	if got >= 1.0:
+		hit_fx.call("heal_text", player.global_position, got)
 
 
 ## target 바로 아래 바닥 높이 (없으면 fallback)

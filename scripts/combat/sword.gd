@@ -150,7 +150,7 @@ func _melee_hits(finisher: bool, reach_mul: float) -> Array:
 			bonus = ink.call("consume")
 		var killed: bool = e.call("take_damage", dmg + bonus)
 		if killed:
-			player.set("health", minf(float(player.get("max_health")), float(player.get("health")) + melee_kill_heal))
+			player.call("heal", melee_kill_heal)
 		elif ink:
 			ink.call("add", ink_finisher if finisher else ink_melee)
 		if bonus > 0.0:

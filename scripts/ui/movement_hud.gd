@@ -7,11 +7,29 @@ var kills := 0
 var _info: Label
 var _crosshair: Label
 var _top_speed := 0.0
+## 체력 막대: 흰색 = 현재 체력, 회색 = 회복 가능 체력 (붉은색은 경고 전용이라 쓰지 않는다)
+const BAR_SIZE := Vector2(320, 14)
+var _bar_health: ColorRect
+var _bar_recover: ColorRect
 
 
 func _ready() -> void:
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.6)
+	bg.position = Vector2(14, 10)
+	bg.size = BAR_SIZE + Vector2(4, 4)
+	add_child(bg)
+	_bar_recover = ColorRect.new()
+	_bar_recover.color = Color(0.55, 0.55, 0.58)
+	_bar_recover.position = Vector2(16, 12)
+	add_child(_bar_recover)
+	_bar_health = ColorRect.new()
+	_bar_health.color = Color(0.95, 0.95, 0.97)
+	_bar_health.position = Vector2(16, 12)
+	add_child(_bar_health)
+
 	_info = _make_label(18)
-	_info.position = Vector2(16, 12)
+	_info.position = Vector2(16, 32)
 	add_child(_info)
 
 	_crosshair = _make_label(28)
@@ -42,11 +60,15 @@ func _process(_delta: float) -> void:
 		dots += "(회복 %d%%)" % int((stamina - pips) * 100.0)
 	var chain: int = player.get("bhop_chain")
 	var hp: float = player.get("health")
+	var rec: float = player.get("recoverable")
+	var max_hp: float = player.get("max_health")
+	_bar_health.size = Vector2(BAR_SIZE.x * clampf(hp / max_hp, 0.0, 1.0), BAR_SIZE.y)
+	_bar_recover.size = Vector2(BAR_SIZE.x * clampf((hp + rec) / max_hp, 0.0, 1.0), BAR_SIZE.y)
 	var sword: Node = player.get("sword")
 	var combo: int = sword.get("combo") if sword else 0
-	_info.text = ("체력 %d / 100\n검 콤보: %d / 3\n패링: %s  (성공 %d · 처치 %d)\n\n속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n"
+	_info.text = ("체력 %d / 100  (회복 가능 %d)\n검 콤보: %d / 3\n패링: %s  (성공 %d · 처치 %d)\n\n속도 %5.1f m/s  (최고 %4.1f)\n상태: %s\n"
 		+ "스태미나(벽 점프·대시): %s\n버니합 연속: %d\n높이: %4.1f m\n시점: %s") % [
-		int(hp), combo, player.call("parry_status"), player.get("parry_count"), kills,
+		int(hp), int(rec), combo, player.call("parry_status"), player.get("parry_count"), kills,
 		speed, _top_speed, player.call("state_name"), dots, chain, player.global_position.y, mode_name]
 	_crosshair.visible = mode_name == "숄더뷰"
 	_crosshair.position = _crosshair.get_viewport_rect().size * 0.5 - _crosshair.size * 0.5
