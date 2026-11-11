@@ -19,6 +19,8 @@ const InputSetup := preload("res://scripts/systems/input_setup.gd")
 const ShooterEnemy := preload("res://scripts/combat/shooter_enemy.gd")
 const CombatFx := preload("res://scripts/systems/combat_fx.gd")
 const SpeedLines := preload("res://scripts/fx/speed_lines.gd")
+const HitEffects := preload("res://scripts/fx/hit_effects.gd")
+const ScreenFx := preload("res://scripts/fx/screen_fx.gd")
 
 const SPAWN := Vector3(0, 0.1, 22)
 ## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급)
@@ -32,6 +34,8 @@ const ENEMY_SPOTS := [
 
 var fx: CanvasLayer
 var speed_lines: CanvasLayer
+var hit_fx: Node3D
+var screen_fx: CanvasLayer
 var enemies: Array[Node] = []
 var kills := 0
 var _active_rig: Node3D
@@ -70,6 +74,10 @@ func _ready() -> void:
 	speed_lines = SpeedLines.new()
 	add_child(speed_lines)
 	speed_lines.player = player
+	hit_fx = HitEffects.new()
+	add_child(hit_fx)
+	screen_fx = ScreenFx.new()
+	add_child(screen_fx)
 
 	for spot in ENEMY_SPOTS:
 		var e := ShooterEnemy.new()
@@ -90,6 +98,7 @@ func _ready() -> void:
 	player.wall_jumped.connect(func(): _feedback(0.12, 0.0))
 	player.landed.connect(_on_landed)
 	player.damaged.connect(func(_amount: float): _feedback(0.3, 0.0))
+	player.sword.hit_enemy.connect(_on_sword_hit)
 
 	_set_camera_mode(false)
 
@@ -99,8 +108,8 @@ func _feedback(trauma: float, fov: float) -> void:
 		return
 	if trauma > 0.0:
 		_active_rig.call("shake", trauma)
-	if fov > 0.0:
-		_active_rig.call("fov_kick", fov)
+	if fov != 0.0:
+		_active_rig.call("fov_kick", fov)  # 양수 = 넓게(대시), 음수 = 줌 펀치(큰 타격)
 
 
 func _on_landed(fall_speed: float) -> void:
@@ -109,15 +118,64 @@ func _on_landed(fall_speed: float) -> void:
 		_feedback(clampf((fall_speed - 14.0) / 16.0, 0.1, 0.5), 0.0)
 
 
+## 검 적중: 공격 종류마다 다른 이펙트. 근접은 묵직하게(히트스톱·흔들림 크게), 검기는 가볍게
+func _on_sword_hit(enemy: Node, killed: bool, melee: bool, kind: String) -> void:
+	var pos: Vector3 = enemy.call("aim_point")
+	var dir := pos - player.global_position
+	dir.y = 0.0
+	dir = dir.normalized() if dir.length() > 0.01 else Vector3(0, 0, -1)
+	var sword: Node = player.get("sword")
+	match kind:
+		"finisher":
+			hit_fx.call("finisher_hit", pos, dir, sword.get("finisher_damage"))
+			_big_moment(pos, 0.08, -6.0, 90.0)
+		"melee":
+			hit_fx.call("melee_hit", pos, dir, sword.get("melee_damage"))
+		"wave_big":
+			hit_fx.call("wave_hit", pos, dir, float(sword.get("wave_damage")) * 1.5)
+		_:
+			hit_fx.call("wave_hit", pos, dir, sword.get("wave_damage"))
+	if killed:
+		return  # 처치 연출(히트스톱·임팩트 프레임·파편)은 _on_enemy_died에서
+	if melee:
+		fx.call("hitstop", 0.045)
+		_feedback(0.18, 0.0)
+	else:
+		fx.call("hitstop", 0.02)
+		_feedback(0.08, 0.0)
+
+
+## 큰 순간 연출: 화면을 가로지르는 붓터치 + 줌 블러 + 줌 펀치(시야를 확 당김)
+func _big_moment(world_pos: Vector3, blur: float, zoom: float, slash_width: float) -> void:
+	var cam := get_viewport().get_camera_3d()
+	var size := get_viewport().get_visible_rect().size
+	var px := size * 0.5
+	if cam and not cam.is_position_behind(world_pos):
+		px = cam.unproject_position(world_pos)
+	screen_fx.call("slash", px, randf_range(-35.0, -15.0) if randf() < 0.5 else randf_range(15.0, 35.0), slash_width)
+	screen_fx.call("zoom_blur", blur, px / size)
+	_feedback(0.0, zoom)
+
+
 func _on_parried(_projectile: Node) -> void:
 	fx.call("hitstop", 0.08)
 	fx.call("impact_frame", "parry", 2, true)
 	_feedback(0.35, 0.0)
+	hit_fx.call("parry_text", player.global_position)
+	var cam := get_viewport().get_camera_3d()
+	var size := get_viewport().get_visible_rect().size
+	var px := cam.unproject_position(player.global_position + Vector3.UP) if cam else size * 0.5
+	screen_fx.call("zoom_blur", 0.06, px / size)
+	_feedback(0.0, -4.0)
 
 
-func _on_enemy_died(_enemy: Node) -> void:
+func _on_enemy_died(enemy: Node) -> void:
 	kills += 1
 	hud.set("kills", kills)
+	var epos := (enemy as Node3D).global_position
+	var elite: bool = enemy.call("is_elite")
+	hit_fx.call("enemy_killed", epos, enemy.call("body_height"), elite)
+	_big_moment(epos + Vector3.UP * 1.2, 0.14 if elite else 0.1, -9.0 if elite else -7.0, 150.0 if elite else 120.0)
 	fx.call("hitstop", 0.05)
 	fx.call("impact_frame", "kill", 3, false)
 	_feedback(0.45, 0.0)

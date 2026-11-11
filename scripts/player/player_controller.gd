@@ -6,6 +6,8 @@ extends CharacterBody3D
 ## 스태미나: 벽 점프와 대시가 같은 스태미나(3칸)를 나눠 쓴다.
 ## 바닥에 서 있는 동안에만 회복한다(공중에서는 회복 없음).
 
+const Sword := preload("res://scripts/combat/sword.gd")
+
 signal respawned
 signal parried(projectile: Node)
 signal damaged(amount: float)
@@ -86,6 +88,7 @@ var _parry_left := 0.0
 var _parry_cooldown_left := 0.0
 var _parry_hit := false
 var _parry_fan: MeshInstance3D
+var sword: Node3D
 var _last_air_vy := 0.0
 var _ghost_timer := 0.0
 var _body_mesh_node: MeshInstance3D
@@ -114,6 +117,9 @@ func _ready() -> void:
 	floor_snap_length = 0.3
 	_build_collision()
 	_build_visual()
+	sword = Sword.new()
+	sword.player = self
+	_visual.add_child(sword)
 
 
 func jump_velocity() -> float:

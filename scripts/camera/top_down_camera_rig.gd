@@ -41,9 +41,10 @@ func shake(amount: float) -> void:
 	_trauma = minf(1.0, _trauma + amount)
 
 
-## 순간적으로 시야를 넓혔다가 돌아온다 (대시 등)
+## 순간적으로 시야를 넓혔다가 돌아온다 (대시 등). 음수면 확 당겨 들어가는 줌 펀치 (큰 타격)
 func fov_kick(amount: float) -> void:
-	_fov_kick = maxf(_fov_kick, amount)
+	if absf(amount) > absf(_fov_kick):
+		_fov_kick = amount
 
 
 func activate(on: bool) -> void:

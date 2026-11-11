@@ -15,6 +15,8 @@ static func ensure_actions() -> void:
 	_add_keys("dash", [KEY_E])
 	_add_keys("parry", [KEY_F])
 	_add_mouse("parry", MOUSE_BUTTON_RIGHT)
+	_add_mouse("attack", MOUSE_BUTTON_LEFT)
+	_add_keys("attack", [KEY_J])
 	_add_keys("toggle_camera", [KEY_V])
 	_add_keys("restart", [KEY_R])
 
@@ -26,6 +28,7 @@ static func ensure_actions() -> void:
 	_add_joy_button("slide", JOY_BUTTON_B)
 	_add_joy_button("dash", JOY_BUTTON_X)
 	_add_joy_button("parry", JOY_BUTTON_RIGHT_SHOULDER)
+	_add_joy_axis("attack", JOY_AXIS_TRIGGER_RIGHT, 1.0)
 	_add_joy_button("toggle_camera", JOY_BUTTON_BACK)
 	_add_joy_button("restart", JOY_BUTTON_Y)
 

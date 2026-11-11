@@ -50,7 +50,8 @@ func shake(amount: float) -> void:
 
 
 func fov_kick(amount: float) -> void:
-	_fov_kick = maxf(_fov_kick, amount)
+	if absf(amount) > absf(_fov_kick):
+		_fov_kick = amount
 
 
 func activate(on: bool) -> void:

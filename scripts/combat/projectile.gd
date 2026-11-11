@@ -85,6 +85,7 @@ func _on_body_entered(body: Node) -> void:
 	elif body.is_in_group("enemy"):
 		if not reflected:
 			return  # 적끼리는 맞지 않는다
+		get_tree().call_group("hit_fx", "reflect_hit", global_position, velocity.normalized(), damage)
 		body.call("take_damage", damage)
 		queue_free()
 	else:

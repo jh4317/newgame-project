@@ -36,6 +36,12 @@ var _body_mat: StandardMaterial3D
 var _eye_mat: StandardMaterial3D
 var _eye: MeshInstance3D
 var _size := Vector3(1.2, 2.2, 1.2)
+var _body_mesh: MeshInstance3D
+var _punch := 0.0
+
+
+func body_height() -> float:
+	return _size.y
 
 
 func is_elite() -> bool:
@@ -68,6 +74,7 @@ func _ready() -> void:
 	_body_mat.albedo_color = BODY_COLOR
 	body.material_override = _body_mat
 	add_child(body)
+	_body_mesh = body
 
 	if is_elite():
 		# 중급 표시: 머리 위 흰 발광 띠 (붉은색은 경고 전용이라 쓰지 않는다)
@@ -109,13 +116,17 @@ func aim_point() -> Vector3:
 	return global_position + Vector3.UP * 1.2
 
 
-func take_damage(amount: float) -> void:
+## 이번 공격으로 죽었으면 true
+func take_damage(amount: float) -> bool:
 	if _dead:
-		return
-	health -= amount / 20.0  # 탄 기본 대미지 20 = 체력 1. 반사탄(×2)은 2
+		return false
+	health -= amount / 20.0  # 대미지 20 = 체력 1칸. 반사탄(×2)은 2칸
 	_flash = 0.12
+	_punch = clampf(amount / 40.0, 0.5, 1.5)  # 세게 맞을수록 크게 움찔
 	if health <= 0.0:
 		_die()
+		return true
+	return false
 
 
 func _physics_process(delta: float) -> void:
@@ -148,6 +159,9 @@ func _physics_process(delta: float) -> void:
 func _process(delta: float) -> void:
 	_flash -= delta
 	_body_mat.albedo_color = Color(1, 1, 1) if _flash > 0.0 else BODY_COLOR
+	# 피격 움찔: 옆으로 부풀고 위아래로 눌렸다 돌아온다
+	_punch = move_toward(_punch, 0.0, 8.0 * delta)
+	_body_mesh.scale = Vector3(1.0 + 0.15 * _punch, 1.0 - 0.1 * _punch, 1.0 + 0.15 * _punch)
 
 
 func _fire() -> void:
