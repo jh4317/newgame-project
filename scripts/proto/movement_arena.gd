@@ -24,6 +24,7 @@ const HitEffects := preload("res://scripts/fx/hit_effects.gd")
 const ScreenFx := preload("res://scripts/fx/screen_fx.gd")
 const StyleMeter := preload("res://scripts/systems/style_meter.gd")
 const Sfx := preload("res://scripts/systems/sfx.gd")
+const PauseMenu := preload("res://scripts/ui/pause_menu.gd")
 
 ## 먹 끌어당김 (먹이 가득 찬 적에게 반사탄 적중, GDD 3.8)
 const PULL_RADIUS := 14.0      # 이 거리 안의 다른 적을 끌어당긴다
@@ -168,6 +169,7 @@ func _ready() -> void:
 	sfx = Sfx.new()
 	add_child(sfx)
 	sfx.set("listener", player)
+	add_child(PauseMenu.new())  # Esc: 일시정지·설정 (음량, 임팩트 프레임)
 
 	if not wave_mode:
 		# 연습 모드: 모든 적을 한꺼번에 두고, 죽으면 잠시 뒤 다시 살아난다

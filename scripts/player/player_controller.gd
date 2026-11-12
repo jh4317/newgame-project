@@ -7,6 +7,8 @@ extends CharacterBody3D
 ## 바닥에 서 있는 동안에만 회복한다(공중에서는 회복 없음).
 
 const Sword := preload("res://scripts/combat/sword.gd")
+const Animator := preload("res://scripts/player/player_animator.gd")
+const Model := preload("res://scripts/player/player_model.gd")
 const InkTrail := preload("res://scripts/combat/ink_trail.gd")
 
 signal respawned
@@ -108,7 +110,7 @@ var _parry_fan: MeshInstance3D
 var sword: Node3D
 var _last_air_vy := 0.0
 var _ghost_timer := 0.0
-var _body_mesh_node: MeshInstance3D
+var _model: Node3D  ## player_model.gd (로우폴리 묵객)
 var _time_on_floor := 0.0
 var _dash_left := 0.0
 var _dash_cooldown_left := 0.0
@@ -123,6 +125,8 @@ var _wall_normal := Vector3.ZERO
 var _slide_dir := Vector3(0, 0, -1)
 var _spawn_point := Vector3.ZERO
 var _visual: Node3D
+var _pose: Node3D  ## 몸통·코: 절차적 애니메이션이 움직이는 부분 (player_animator.gd)
+var animator: Node
 var _shadow: MeshInstance3D
 var _dots: Array[MeshInstance3D] = []
 var _ink_trail_dist := 0.0
@@ -144,6 +148,13 @@ func _ready() -> void:
 	sword = Sword.new()
 	sword.player = self
 	_visual.add_child(sword)
+	animator = Animator.new()
+	animator.player = self
+	animator.pose = _pose
+	animator.visual = _visual
+	animator.model = _model
+	animator.states = State
+	add_child(animator)
 	ink_trail = InkTrail.new()
 	ink_trail.player = self
 	get_parent().add_child.call_deferred(ink_trail)
@@ -530,25 +541,12 @@ func _build_collision() -> void:
 func _build_visual() -> void:
 	_visual = Node3D.new()
 	add_child(_visual)
+	_pose = Node3D.new()
+	_visual.add_child(_pose)
 
-	var body := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.radius = CAPSULE_RADIUS
-	cm.height = CAPSULE_HEIGHT
-	body.mesh = cm
-	body.position.y = CAPSULE_HEIGHT * 0.5
-	body.material_override = _flat(Color(0.92, 0.92, 0.95))
-	_visual.add_child(body)
-	_body_mesh_node = body
-
-	# 바라보는 방향 표시 (붉은색은 '패링 불가' 경고용이라 쓰지 않는다)
-	var nose := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.25, 0.25, 0.5)
-	nose.mesh = bm
-	nose.position = Vector3(0, 1.4, -0.45)
-	nose.material_override = _flat(Color(0.25, 0.8, 1.0))
-	_visual.add_child(nose)
+	# 로우폴리 묵객 모델 (player_model.gd). 바이저(청록)와 휘날리는 목도리가 바라보는 방향을 보여 준다
+	_model = Model.new()
+	_pose.add_child(_model)
 
 	# 패링 판정 부채꼴: 판정이 열려 있는 동안만 보인다
 	_parry_fan = MeshInstance3D.new()
@@ -611,10 +609,11 @@ func _update_visual(delta: float, input_dir: Vector3) -> void:
 	_visual.rotation.y = atan2(-facing.x, -facing.z)
 
 	var target_scale_y := 0.55 if state == State.SLIDE else 1.0
-	var target_scale_z := 1.6 if state == State.DASH else 1.0  # 대시 중 앞뒤로 늘어나는 표시
 	var k := 1.0 - exp(-20.0 * delta)
 	_visual.scale.y = lerpf(_visual.scale.y, target_scale_y, k)
-	_visual.scale.z = lerpf(_visual.scale.z, target_scale_z, k)
+	# 대시 중 늘어나는 표시는 animator가 대시 방향으로 맡는다
+	if animator:
+		animator.call("update", delta)
 
 	var query := PhysicsRayQueryParameters3D.create(
 		global_position + Vector3.UP * 0.2, global_position + Vector3.DOWN * 60.0)
@@ -647,9 +646,6 @@ func _update_visual(delta: float, input_dir: Vector3) -> void:
 func _spawn_afterimage() -> void:
 	if get_parent() == null:
 		return
-	var ghost := MeshInstance3D.new()
-	ghost.mesh = _body_mesh_node.mesh
-	ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -657,9 +653,16 @@ func _spawn_afterimage() -> void:
 	m.emission_enabled = true
 	m.emission = Color(1, 1, 1)
 	m.emission_energy_multiplier = 1.5
-	ghost.material_override = m
+	# 모델의 지금 자세를 부품별로 그대로 본뜬 실루엣
+	var ghost := Node3D.new()
 	get_parent().add_child(ghost)
-	ghost.global_transform = _body_mesh_node.global_transform
+	for part: MeshInstance3D in _model.get("meshes"):
+		var g := MeshInstance3D.new()
+		g.mesh = part.mesh
+		g.material_override = m
+		g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		ghost.add_child(g)
+		g.global_transform = part.global_transform
 	var tw := ghost.create_tween()
 	tw.tween_property(m, "albedo_color:a", 0.0, afterimage_life)
 	tw.tween_callback(ghost.queue_free)
