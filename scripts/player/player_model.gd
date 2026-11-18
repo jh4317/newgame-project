@@ -49,6 +49,10 @@ var meshes: Array[MeshInstance3D] = []
 
 var _mats := {}
 var _time := 0.0
+## 큰 붓: 평소엔 등에 메고, 슬라이드하면 다리 밑으로 내려와 붓끝을 바닥에 대고 탄다 (먹 획을 긋는 모습)
+var brush: Node3D
+var _brush_back := Transform3D()   # 몸통 기준 등에 멘 자세
+var _brush_ride := 0.0             # 0 = 등, 1 = 다리 밑
 
 
 func _ready() -> void:
@@ -88,8 +92,9 @@ func _build() -> void:
 	_part(torso, _box(Vector3(0.08, 0.1, 0.06)), VISOR, Vector3(-0.17, 0.03, -0.09), 0.6)  # 허리의 먹통
 	_part(torso, _box(Vector3(0.1, 0.11, 0.08)), LEATHER, Vector3(0.17, -0.01, -0.06))  # 가죽 주머니
 	# 등에 멘 큰 붓: 오른쪽 어깨 위로 비스듬히, 먹 묻은 붓끝이 왼쪽 허리 아래로
-	var brush := _joint(torso, Vector3(0.0, 0.28, 0.17))
-	brush.rotation.z = deg_to_rad(-38.0)
+	# 모델 원점에 붙여 두고 매 프레임 등 ↔ 다리 밑 자세를 섞는다
+	brush = _joint(self, Vector3.ZERO)
+	_brush_back = Transform3D(Basis.from_euler(Vector3(0, 0, deg_to_rad(-38.0))), Vector3(0.0, 0.28, 0.17))
 	_part(brush, _frustum(Vector2(0.045, 0.045), Vector2(0.04, 0.04), -0.2, 0.52), WOOD)
 	_part(brush, _frustum(Vector2(0.06, 0.06), Vector2(0.06, 0.06), -0.26, -0.2), IVORY)
 	_part(brush, _frustum(Vector2(0.11, 0.11), Vector2(0.07, 0.07), -0.42, -0.26), IVORY)
@@ -363,6 +368,22 @@ func animate(delta: float, phase: float, amt: float, move: Vector2, st: int, sta
 	var sflap := sin(_time * 11.0) * 0.18 * (0.3 + blow)
 	scarf.rotation.x = lerpf(scarf.rotation.x, clampf(-(0.25 + 1.1 * blow + 0.6 * lift) + sflap, -1.6, 0.1), k)
 	scarf.rotation.z = lerpf(scarf.rotation.z, sin(_time * 7.0) * 0.15 * blow, k)
+
+	# 큰 붓: 슬라이드하면 다리 밑으로 휙 내려와 눕는다. 자루는 앞, 붓끝은 뒤로 바닥에 닿아 먹 획을 끈다
+	_brush_ride = lerpf(_brush_ride, 1.0 if st == states.SLIDE else 0.0, 1.0 - exp(-16.0 * delta))
+	var back := hips.transform * torso.transform * _brush_back
+	var shake := sin(_time * 38.0) * 0.012 * blow     # 바닥을 긁으며 떨린다
+	# 탈 때는 1.5배로 커진다: 탑뷰에서도 '붓을 타고 미끄러지는' 모습이 읽히게
+	var ride := Transform3D(Basis.from_euler(Vector3(deg_to_rad(-84.0), 0.0, shake * 4.0)).scaled(Vector3.ONE * 1.5), Vector3(0.0, 0.1 + shake, -0.1))
+	if _brush_ride < 0.002:
+		brush.transform = back
+	elif _brush_ride > 0.998:
+		brush.transform = ride
+	else:
+		# 등에서 다리 밑으로 휘두르듯: 중간에 살짝 옆으로 돌며 내려온다
+		var mid := back.interpolate_with(ride, _brush_ride)
+		mid.basis = mid.basis * Basis.from_euler(Vector3(0, sin(_brush_ride * PI) * 0.8, 0))
+		brush.transform = mid
 
 	if grip_pivot:
 		_reach_right(grip_pivot.global_transform * GRIP)

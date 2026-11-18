@@ -6,6 +6,7 @@ extends Node3D
 ##         기준치를 넘으면 발밑에 흰 고리가 맥동해 "지금 베라"고 알려 준다.
 ## - 잔향: 먹이 묻을 때마다 적의 검은 실루엣이 메아리처럼 몇 겹 퍼지고, 주변의 먹방울이
 ##         몸으로 빨려 들어가며, 새로 찬 먹방울 칸이 톡 튄다. 기준치를 넘는 순간은 흰 잔향이 더해진다.
+## - 그림자 괴물: 먹이 쌓일수록 발밑 먹 웅덩이에서 촉수·눈·뿔 달린 머리가 차례로 드러난다 (ink_shadow_beast.gd)
 ## 적 스크립트가 add_child 전에 body_size(와 body_height)를 알려 준다.
 
 signal changed(ink: float)
@@ -19,6 +20,7 @@ signal changed(ink: float)
 
 const PIP_SIZE := 20.0  ## 먹방울 1칸 = 먹 20. 칸 수는 max_ink에 따라 정해진다 (하급 5칸, 중급 8칸)
 const INK := Color(0.02, 0.02, 0.02)
+const ShadowBeast := preload("res://scripts/combat/ink_shadow_beast.gd")
 
 var ink := 0.0
 var body_height := 2.2
@@ -34,6 +36,7 @@ var _drips: CPUParticles3D
 var _aura: CPUParticles3D    ## 먹이 쌓일수록 몸 주변에서 피어오르는 검은 기운
 var _embers: CPUParticles3D  ## 기준치 이상에서 검은 기운 사이로 흩날리는 흰 불티
 var _t := 0.0
+var _beast: Node3D
 
 
 func _ready() -> void:
@@ -64,6 +67,8 @@ func consume() -> float:
 		return 0.0
 	var t := (ink - threshold) / maxf(max_ink - threshold, 0.001)
 	var bonus := lerpf(burst_min_damage, burst_max_damage, t)
+	if _beast:
+		_beast.call("roar")  # 터지는 순간 포효하고, 먹이 빠지며 가라앉는다
 	ink = 0.0
 	_refresh()
 	changed.emit(ink)
@@ -87,6 +92,10 @@ func _process(delta: float) -> void:
 		for i in _pips.size():
 			_pips[i].global_position = base.global_position + Vector3((i - (_pips.size() - 1) * 0.5) * 0.34, body_height + 0.75, 0.0)
 		_ring.global_position = base.global_position + Vector3.UP * 0.05
+		if _beast:
+			# 적 몸 크기에 맞춘다 (플레이어 그림자 기준 반지름 0.5 → 적 반폭)
+			var size := maxf(body_size.x, body_size.z) / 1.0
+			_beast.call("follow", delta, base.global_position, size, ratio(), base.global_rotation.y)
 	if is_ready():
 		_t += delta
 		var pulse := 0.5 + 0.5 * sin(_t * 14.0)
@@ -139,6 +148,8 @@ func _echo(amount: float, crossed: bool) -> void:
 		_ring_echo(base, INK, 0.6, 1.2 + 0.5 * (i + 1) * strength, 0.3 + 0.05 * i, 0.07 * i)
 	_absorb(base, int(6 + 8 * strength))
 	if crossed:
+		if _beast:
+			_beast.call("roar")
 		_ghost(base, Color(1, 1, 1), 0.8, 1.7, 0.35, 0.05, true)
 		_ring_echo(base, Color(1, 1, 1), 0.9, 3.2, 0.4, 0.0, true)
 
@@ -242,6 +253,8 @@ func _echo_mat(color: Color, alpha: float, glow: bool) -> StandardMaterial3D:
 
 
 func _build_visuals() -> void:
+	_beast = ShadowBeast.new()
+	add_child(_beast)
 	_pip_full_mat = StandardMaterial3D.new()
 	_pip_full_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_pip_full_mat.albedo_color = INK

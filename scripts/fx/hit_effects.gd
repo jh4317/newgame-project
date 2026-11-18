@@ -1,17 +1,24 @@
 extends Node3D
 ## 적중·처치 이펙트 (GDD 8.3: 로우폴리가 아닌 화려한 흑백 + 블룸, 붉은색은 쓰지 않음)
 ## 만화풍의 과장된 타격 연출을 목표로 한다: 붓터치 베기 자국(흰 심 + 검은 외곽선),
-## 크게 튀어나오는 대미지 숫자, 바닥에 튀는 먹물, 화면 연출(화면 베기·줌 블러)은 combat_fx/screen_slash가 맡는다.
+## 바닥에 튀는 먹물, 화면 연출(화면 베기·줌 블러)은 combat_fx/screen_slash가 맡는다.
 ## 플레이어 공격 종류마다 모양이 다르다:
-##   근접 베기   : 굵은 붓터치 자국 1줄 + 불꽃 + 충격파 고리 + 숫자
-##   3타 마무리  : 큰 X자 붓터치 + 큰 충격파 + 섬광 + 불꽃 많이 + 검은 연기 + 큰 숫자
-##   검기        : 얇고 긴 붓터치 + 불꽃 조금 + 작은 숫자
-##   반사탄      : 섬광 구 + 방사형 가시 + 불꽃 + 큰 숫자
+##   근접 베기   : 굵은 붓터치 자국 1줄 + 불꽃 + 충격파 고리
+##   3타 마무리  : 큰 X자 붓터치 + 큰 충격파 + 섬광 + 불꽃 많이 + 검은 연기
+##   검기        : 얇고 긴 붓터치 + 불꽃 조금
+##   반사탄      : 섬광 구 + 방사형 가시 + 불꽃
 ##   처치        : 로우폴리 파편 + 큰 섬광 + 검은 연기 + 바닥 충격파 + 바닥 먹물
+## 적중마다 '먹 관통'이 함께 나온다: 먹 창이 적의 반대편으로 뚫고 나가며 먹방울을 뿜고 뒤쪽 바닥에 먹을 뿌린다.
 ## 이펙트 노드는 스스로 사라진다. 히트스톱 중에는 함께 멈춘다(time_scale 영향).
+## 대미지 숫자와 먹 회복 숫자는 기본으로 끈다 (show_damage_numbers, show_ink_numbers). 패링·먹 폭발 같은 문구는 그대로 뜬다.
 
 const WHITE := Color(1, 1, 1)
 const INK := Color(0.02, 0.02, 0.02)
+
+## 공격 피해 숫자(먹 폭발 추가 피해 포함)를 띄울지
+@export var show_damage_numbers := false
+## 먹(체력)을 되찾을 때 머리 위에 "+N 먹"을 띄울지
+@export var show_ink_numbers := false
 
 
 func _ready() -> void:
@@ -24,6 +31,7 @@ func melee_hit(pos: Vector3, dir: Vector3, damage := 40.0) -> void:
 	_brush(pos, dir, 3.6, 0.55, 0.2, 30.0)
 	_sparks(pos, dir, 16, 9.0, 18.0, 0.32, 50.0)
 	_ring(pos, 2.0, 0.2)
+	_ink_pierce(pos, dir, 3.2, 0.42, 18)
 	damage_number(pos, damage, false)
 
 
@@ -34,12 +42,16 @@ func finisher_hit(pos: Vector3, dir: Vector3, damage := 60.0) -> void:
 	_ring(pos, 4.0, 0.3)
 	_flash(pos, 2.0, 0.14)
 	_smoke(pos, 8, 0.7)
+	# X자 붓터치에 맞춰 두 갈래로 크게 뚫고 나간다
+	_ink_pierce(pos, dir.rotated(Vector3.UP, deg_to_rad(14.0)), 4.6, 0.6, 22)
+	_ink_pierce(pos, dir.rotated(Vector3.UP, deg_to_rad(-14.0)), 4.6, 0.6, 22, false)
 	damage_number(pos, damage, true)
 
 
 func wave_hit(pos: Vector3, dir: Vector3, damage := 20.0) -> void:
 	_brush(pos, dir, 4.0, 0.22, 0.15, 90.0)  # 진행 방향에 수직인 얇은 자국
 	_sparks(pos, dir, 8, 7.0, 13.0, 0.25, 35.0)
+	_ink_pierce(pos, dir, 3.6, 0.22, 10, false)  # 가늘고 길게
 	damage_number(pos, damage, false)
 
 
@@ -48,6 +60,7 @@ func reflect_hit(pos: Vector3, dir: Vector3, damage := 40.0) -> void:
 	for i in 8:
 		_brush(pos, dir, 2.0, 0.16, 0.16, i * 45.0, 1.0)  # 방사형 가시
 	_sparks(pos, dir, 20, 9.0, 20.0, 0.36, 180.0)
+	_ink_pierce(pos, dir, 3.4, 0.4, 16)
 	damage_number(pos, damage, true)
 
 
@@ -61,7 +74,7 @@ func enemy_killed(pos: Vector3, size: float, elite: bool) -> void:
 
 
 ## 먹 폭발: 쌓인 먹이 한꺼번에 터진다. 검은 먹방울이 사방으로 튀고, 바닥에 큰 먹 자국,
-## 흰 섬광과 고리, "먹 폭발" 문구와 추가 피해 숫자
+## 흰 섬광과 고리, "먹 폭발" 문구 (추가 피해 숫자는 show_damage_numbers일 때만)
 func ink_burst(pos: Vector3, base_pos: Vector3, bonus: float) -> void:
 	_ink_droplets(pos, 40, 13.0)
 	_ink_splat(base_pos, 10, 1.8)
@@ -69,7 +82,8 @@ func ink_burst(pos: Vector3, base_pos: Vector3, bonus: float) -> void:
 	_ring(base_pos + Vector3.UP * 0.1, 5.5, 0.35)
 	_brush(pos, Vector3(1, 0, 0), 6.0, 0.9, 0.3, 0.0)
 	_pop_label(pos + Vector3.UP * 1.6, "먹 폭발", 110, 0.8)
-	_pop_label(pos + Vector3(0.0, 0.6, 0.0), "+" + str(int(round(bonus))), 150, 0.8)
+	if show_damage_numbers:
+		_pop_label(pos + Vector3(0.0, 0.6, 0.0), "+" + str(int(round(bonus))), 150, 0.8)
 
 
 ## 먹 끌어당김: 중심으로 검은 고리가 오므라들고, 끌려오는 적마다 먹 사슬이 이어졌다 끊긴다
@@ -84,6 +98,8 @@ func ink_pull(center: Vector3, from_points: Array) -> void:
 
 ## 회복 표시 (플레이어 머리 위)
 func heal_text(pos: Vector3, amount: float) -> void:
+	if not show_ink_numbers:
+		return
 	_pop_label(pos + Vector3(0.6, 2.0, 0.0), "+%d 먹" % int(round(amount)), 80, 0.8)
 
 
@@ -94,11 +110,151 @@ func parry_text(pos: Vector3) -> void:
 
 ## 크게 튀어나왔다가 떠오르며 사라지는 대미지 숫자 (흰 글자 + 두꺼운 검은 외곽선)
 func damage_number(pos: Vector3, damage: float, big: bool) -> void:
+	if not show_damage_numbers:
+		return
 	var jitter := Vector3(randf_range(-0.6, 0.6), randf_range(0.3, 0.9), randf_range(-0.3, 0.3))
 	_pop_label(pos + jitter, str(int(round(damage))), 130 if big else 84, 0.6)
 
 
 # ---------------------------------------------------------------- 조각들
+
+var _spike_mesh: ArrayMesh
+
+## 먹 관통: 적의 몸을 꿰뚫고 반대편으로 먹 창이 튀어나온다.
+##   - 검은 먹 창(가운데 흰 심)이 순식간에 뻗었다가 가늘어지며 사라진다. 깊이 테스트 없이 적 위에 그려 '뚫고 지나간' 느낌
+##   - 뚫고 나간 쪽으로 먹방울이 원뿔 모양으로 뿜어진다
+##   - splat이면 적 뒤쪽 바닥에 진행 방향으로 길게 먹이 뿌려진다
+## dir: 공격 방향(플레이어 → 적), length: 창 길이(m), width: 창 굵기, drops: 먹방울 수
+func _ink_pierce(pos: Vector3, dir: Vector3, length: float, width: float, drops: int, splat := true) -> void:
+	var d := Vector3(dir.x, 0.0, dir.z)
+	d = d.normalized() if d.length() > 0.01 else Vector3.FORWARD
+	if _spike_mesh == null:
+		_spike_mesh = _make_spike()
+
+	# 먹 창: 적 몸 안쪽(조금 앞)에서 시작해 뒤로 뚫고 나간다
+	var root := Node3D.new()
+	add_child(root)
+	root.global_position = pos - d * 0.5
+	root.look_at(root.global_position + d, Vector3.UP)
+	root.rotate_object_local(Vector3.RIGHT, deg_to_rad(randf_range(-6.0, 4.0)))  # 살짝 위아래로 흩어지게
+	for layer in 2:
+		var ink := layer == 0
+		var m := MeshInstance3D.new()
+		m.mesh = _spike_mesh
+		var mat: StandardMaterial3D
+		if ink:
+			mat = StandardMaterial3D.new()
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			mat.albedo_color = INK
+		else:
+			mat = _glow_mat(6.0)
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.no_depth_test = true
+		mat.render_priority = 1 if ink else 2
+		m.material_override = mat
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		# 흰 심은 먹보다 가늘고 짧다
+		m.scale = Vector3(width, width, length) if ink else Vector3(width * 0.32, width * 0.32, length * 0.8)
+		root.add_child(m)
+	var life := 0.22 + 0.04 * length
+	root.scale = Vector3(1.0, 1.0, 0.05)
+	var tw := root.create_tween()
+	tw.tween_property(root, "scale", Vector3(1.15, 1.15, 1.0), 0.06).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	tw.tween_property(root, "scale", Vector3(0.0, 0.0, 1.15), life).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(root, "global_position", root.global_position + d * 0.6, life)
+	tw.tween_callback(root.queue_free)
+
+	# 뚫고 나간 쪽으로 뿜어지는 먹방울
+	var exit := pos + d * 0.6
+	var p := CPUParticles3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.1
+	sm.height = 0.2
+	sm.radial_segments = 6
+	sm.rings = 3
+	p.mesh = sm
+	var dmat := StandardMaterial3D.new()
+	dmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dmat.albedo_color = INK
+	p.material_override = dmat
+	p.one_shot = true
+	p.explosiveness = 0.95
+	p.amount = drops
+	p.lifetime = 0.55
+	p.direction = (d + Vector3.UP * 0.25).normalized()
+	p.spread = 16.0
+	p.initial_velocity_min = 8.0
+	p.initial_velocity_max = 8.0 + length * 4.0
+	p.gravity = Vector3(0, -26, 0)
+	p.scale_amount_min = 0.6
+	p.scale_amount_max = 1.8 * width / 0.4 + 0.4
+	p.scale_amount_curve = _shrink_curve(0.5)
+	_emit_once(p, exit, 0.55)
+
+	# 적 뒤쪽 바닥에 진행 방향으로 길게 뿌려진 먹
+	if splat:
+		var q := PhysicsRayQueryParameters3D.create(exit + Vector3.UP * 0.5, exit + Vector3.DOWN * 6.0)
+		var ex: Array[RID] = []
+		for n in get_tree().get_nodes_in_group("enemy") + get_tree().get_nodes_in_group("player"):
+			if n is CollisionObject3D:
+				ex.append((n as CollisionObject3D).get_rid())
+		q.exclude = ex
+		var hit := get_world_3d().direct_space_state.intersect_ray(q)
+		if not hit.is_empty():
+			var ground: Vector3 = hit["position"]
+			var blobs := 3 + int(length)
+			for i in blobs:
+				var t := float(i + 1) / blobs
+				var at := ground + d * (0.4 + t * length * 0.7) + d.cross(Vector3.UP) * randf_range(-0.25, 0.25) * t
+				_ink_streak(at, d, (1.0 - t * 0.6) * width * 1.4, 0.15 * i)
+
+
+## 바닥 먹 줄기 하나: 진행 방향으로 길쭉한 납작한 먹. delay만큼 늦게 번져 뿌려지는 순서가 보인다
+func _ink_streak(pos: Vector3, d: Vector3, size: float, delay_frac: float) -> void:
+	var m := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = 8
+	sm.rings = 4
+	m.mesh = sm
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color(INK.r, INK.g, INK.b, 0.9)
+	m.material_override = mat
+	m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(m)
+	m.global_position = pos + Vector3.UP * 0.025
+	m.rotation.y = atan2(d.x, d.z)
+	var final_scale := Vector3(size * randf_range(0.7, 1.0), 0.01, size * randf_range(1.8, 2.8))
+	m.scale = final_scale * 0.1
+	var tw := m.create_tween()
+	tw.tween_interval(0.04 * delay_frac * 10.0)
+	tw.tween_property(m, "scale", final_scale, 0.07).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(1.0)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 0.6)
+	tw.tween_callback(m.queue_free)
+
+
+## 먹 창 메시: -Z로 길이 1, 굵기 1. 뒤(+Z)는 짧고 뭉툭하게, 앞(-Z)은 길고 뾰족한 마름모 단면의 창
+func _make_spike() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var back := Vector3(0, 0, 0.08)
+	var tip := Vector3(0, 0, -1.0)
+	var ring := [Vector3(0.5, 0, -0.12), Vector3(0, 0.5, -0.12), Vector3(-0.5, 0, -0.12), Vector3(0, -0.5, -0.12)]
+	for i in 4:
+		var a: Vector3 = ring[i]
+		var b: Vector3 = ring[(i + 1) % 4]
+		st.add_vertex(back)
+		st.add_vertex(a)
+		st.add_vertex(b)
+		st.add_vertex(a)
+		st.add_vertex(tip)
+		st.add_vertex(b)
+	return st.commit()
 
 ## 붓터치 베기 자국: 가운데가 두껍고 끝이 뾰족한 초승달. 흰 심 + 검은 외곽선 두 겹.
 ## 확 그어졌다가 얇아지며 사라진다. 깊이 테스트 없이 항상 위에 그린다.
