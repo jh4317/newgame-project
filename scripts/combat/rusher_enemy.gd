@@ -17,8 +17,9 @@ enum Tier { BASIC, ELITE }
 enum State { CHASE, WINDUP, CHARGE, RECOVER, STAGGER }
 
 const InkStack := preload("res://scripts/combat/ink_stack.gd")
-const BODY_COLOR := Color(0.6, 0.6, 0.64)
-const INK_TINT := Color(0.03, 0.03, 0.03)
+const InkWash := preload("res://scripts/combat/ink_wash_look.gd")
+## 몸통은 화선지에 그린 수묵담채 (ink_wash_look.gd). 돌격형은 비취색
+const TINT := Color(0.07, 0.26, 0.18)
 const WARN_RED := Color(1.0, 0.12, 0.1)
 const ELITE_MAX_INK := 160.0     # 중급 먹 한계 (하급 100)
 const ELITE_BURST_MAX := 120.0   # 중급이 가득(160)일 때 먹 폭발 추가 피해 (체력 6칸)
@@ -58,6 +59,12 @@ var _charge_count := 0
 var _unparryable := false
 var _hit_done := false
 var _pulled := 0.0
+var _agent: NavigationAgent3D   ## 쫓을 때 길찾기 (아레나가 굽는 내비게이션 메시)
+var _repath := 0.0
+var _safe_vel := Vector3.ZERO   ## 무리 회피를 거친 속도 (velocity_computed)
+var _stuck := 0.0               ## 쫓으려는데 못 움직인 시간
+var _unstick := 0.0             ## 모서리에 걸렸을 때 벽을 따라 빠져나가는 남은 시간
+var _unstick_dir := Vector3.ZERO
 var _dead := false
 var _spawn := Vector3.ZERO
 var _flash := 0.0
@@ -66,7 +73,7 @@ var _size := Vector3(1.5, 1.5, 1.3)
 var _col: CollisionShape3D
 var _visual: Node3D
 var _body_mesh: MeshInstance3D
-var _body_mat: StandardMaterial3D
+var _body_mat: ShaderMaterial
 var _horn_mat: StandardMaterial3D
 var _stars: Node3D
 
@@ -109,6 +116,17 @@ func _ready() -> void:
 	_spawn = global_position
 	_cooldown = randf_range(0.6, 1.4)
 	floor_snap_length = 0.3
+	_agent = NavigationAgent3D.new()
+	_agent.path_desired_distance = 1.0
+	_agent.target_desired_distance = 1.5
+	_agent.path_max_distance = 3.0
+	# 무리 회피: 적끼리 서로 비켜 가서 엄폐벽 끝 같은 좁은 길목에 줄지어 막히지 않게
+	_agent.avoidance_enabled = true
+	_agent.radius = maxf(_size.x, _size.z) * 0.6
+	_agent.neighbor_distance = 6.0
+	_agent.time_horizon_agents = 0.8
+	_agent.velocity_computed.connect(func(v: Vector3): _safe_vel = v)
+	add_child(_agent)
 
 	var shape := BoxShape3D.new()
 	shape.size = _size
@@ -191,8 +209,33 @@ func _physics_process(delta: float) -> void:
 		State.CHASE:
 			_cooldown -= delta
 			if to_target.length() > 0.1:
-				_face(to_target, delta)
-				hvel = hvel.move_toward(to_target.normalized() * chase_speed, 40.0 * delta)
+				# 멀면 내비게이션 메시 길을 따라(엄폐벽·기둥·다리를 돌아서), 가까우면 곧장
+				var move_dir := to_target.normalized()
+				if to_target.length() > 4.0:
+					_repath -= delta
+					if _repath <= 0.0:
+						_repath = 0.25
+						_agent.target_position = target.global_position
+					if not _agent.is_navigation_finished():
+						var step := _agent.get_next_path_position() - global_position
+						step.y = 0.0
+						if step.length() > 0.05:
+							move_dir = step.normalized()
+				# 무리 회피: 원하는 속도를 알려 주고, 지난 물리 프레임에 받은 '안전한 속도'로 움직인다
+				_agent.max_speed = chase_speed
+				_agent.velocity = move_dir * chase_speed
+				var steer := Vector3(_safe_vel.x, 0.0, _safe_vel.z)
+				if steer.length() < 0.1:
+					steer = move_dir * chase_speed
+				# 엄폐벽 모서리 등에 걸렸으면 잠깐 벽을 따라 미끄러져 빠져나간다
+				if _unstick > 0.0:
+					_unstick -= delta
+					steer = _unstick_dir * chase_speed
+				_face(steer, delta)
+				hvel = hvel.move_toward(steer, 40.0 * delta)
+				var hop := _try_hop(move_dir, _size.x * 0.5)
+				if hop > 0.0:
+					velocity.y = hop
 			if _cooldown <= 0.0 and to_target.length() <= charge_trigger_range and _can_see_target():
 				_begin_windup()
 		State.WINDUP:
@@ -220,20 +263,52 @@ func _physics_process(delta: float) -> void:
 			if _state_time >= stagger_time:
 				_set_state(State.CHASE)
 
+	vy = velocity.y if velocity.y > vy else vy   # 이번 프레임에 뛰어올랐으면 그 속도를 쓴다
 	vy = 0.0 if is_on_floor() and vy < 0.0 else vy - gravity * delta
 	velocity = Vector3(hvel.x, vy, hvel.z)
 	move_and_slide()
+	# 쫓는데 0.4초 넘게 거의 못 움직였으면: 벽 법선 + 벽을 따르는 방향으로 0.5초 빠져나간다
+	if state == State.CHASE and to_target.length() > 4.0:
+		var moved := Vector2(get_real_velocity().x, get_real_velocity().z).length()
+		_stuck = _stuck + delta if moved < chase_speed * 0.25 else 0.0
+		if _stuck > 0.4 and _unstick <= 0.0 and is_on_wall():
+			_stuck = 0.0
+			var n := get_wall_normal()
+			n.y = 0.0
+			var along := n.cross(Vector3.UP) * (1.0 if randf() < 0.5 else -1.0)
+			_unstick_dir = (n * 0.6 + along).normalized()
+			_unstick = 0.5
+	else:
+		_stuck = 0.0
 	if global_position.y < -20.0:
 		global_position = _spawn
 		velocity = Vector3.ZERO
+
+
+## 낮은 턱(MAX_HOP m 이하, 예: 중앙 광장 1 m·점프 단상)에 막히면 뛰어오른다. 내비게이션 메시가 이 높이까지는 길로 잇는다
+const MAX_HOP := 1.3
+
+func _try_hop(dir: Vector3, half_width: float) -> float:
+	if not is_on_floor() or get_slide_collision_count() == 0 or dir.length() < 0.01:
+		return 0.0
+	var d := Vector3(dir.x, 0.0, dir.z).normalized()
+	var probe := global_position + d * (half_width + 0.35) + Vector3.UP * (MAX_HOP + 0.4)
+	var q := PhysicsRayQueryParameters3D.create(probe, probe + Vector3.DOWN * (MAX_HOP + 0.6))
+	q.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		return 0.0
+	var h := float((hit["position"] as Vector3).y) - global_position.y
+	if h < 0.25 or h > MAX_HOP:
+		return 0.0
+	return sqrt(2.0 * gravity * (h + 0.35))   # 턱 높이 + 여유만큼 뛰어오르는 속도
 
 
 func _process(delta: float) -> void:
 	if _dead:
 		return
 	_flash -= delta
-	var tint := BODY_COLOR.lerp(INK_TINT, float(ink.call("ratio")) * 0.9)
-	_body_mat.albedo_color = Color(1, 1, 1) if _flash > 0.0 else tint
+	InkWash.update(_body_mat, float(ink.call("ratio")), _flash > 0.0)
 	_punch = move_toward(_punch, 0.0, 8.0 * delta)
 	var squash := Vector3(1.0 + 0.15 * _punch, 1.0 - 0.1 * _punch, 1.0 + 0.15 * _punch)
 	if state == State.CHARGE:
@@ -358,8 +433,7 @@ func _build_visuals() -> void:
 	bm.size = _size
 	_body_mesh.mesh = bm
 	_body_mesh.position.y = _size.y * 0.5
-	_body_mat = StandardMaterial3D.new()
-	_body_mat.albedo_color = BODY_COLOR
+	_body_mat = InkWash.body_material(_size, TINT, randf() * 100.0)
 	_body_mesh.material_override = _body_mat
 	_visual.add_child(_body_mesh)
 

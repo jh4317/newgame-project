@@ -1,10 +1,13 @@
 extends CanvasLayer
-## 이동 프로토타입용 디버그 HUD: 속도, 상태, 벽 점프 횟수, 시점, 조작법.
+## HUD: 먹 막대(항상) + 숄더뷰 조준점(항상) + 글자 정보(디버그 모드에서만).
+## 글자 정보 = 먹 수치·콤보·패링·속도·상태·스태미나·버니합·높이·시점, 아래쪽 조작 안내.
+## 디버그 모드는 F1 (style_meter.gd의 is_debug()).
 
 var player: CharacterBody3D
 var mode_name := ""
 var kills := 0
 var _info: Label
+var _help: Label
 var _crosshair: Label
 var _top_speed := 0.0
 ## 먹 막대 (체력 = 먹): 검은 먹 = 현재 먹, 회색 = 흘린 먹(회복 가능), 바탕은 흰 종이.
@@ -38,7 +41,8 @@ func _ready() -> void:
 	add_child(_crosshair)
 
 	var help := _make_label(15)
-	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후=버니합) · Ctrl 슬라이드 · Shift 대시 · 좌클릭 검(근접+검기, 3타 콤보) · F/우클릭 패링 · V 시점 · R 리스폰 · Esc 메뉴"
+	_help = help
+	help.text = "WASD 이동 · Space 점프/벽 점프(착지 직후=버니합) · Ctrl 슬라이드 · Shift 대시 · 좌클릭 검(근접+검기, 3타 콤보) · F/우클릭 패링 · V 시점 · R 리스폰 · Esc 메뉴 · F1 디버그 모드"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	help.offset_left = 16
 	help.offset_right = 1200
@@ -73,6 +77,11 @@ func _process(_delta: float) -> void:
 		int(hp), int(rec), combo, player.call("parry_status"), player.get("parry_count"), kills,
 		speed, _top_speed, player.call("state_name"), dots, chain, player.global_position.y, mode_name]
 	_crosshair.visible = mode_name == "숄더뷰"
+	# 글자 정보는 디버그 모드(F1)에서만
+	var style := get_tree().get_first_node_in_group("style_meter")
+	var debug := style != null and bool(style.call("is_debug"))
+	_info.visible = debug
+	_help.visible = debug
 	_crosshair.position = _crosshair.get_viewport_rect().size * 0.5 - _crosshair.size * 0.5
 
 

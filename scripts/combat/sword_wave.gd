@@ -22,6 +22,8 @@ var _edge_mat: StandardMaterial3D
 var _spray: CPUParticles3D
 var _travel := 0.0
 var _splat_mesh: SphereMesh
+## 세로로 선 초승달 (일필휘지 종베기 검기). 판정 상자는 그대로이고 모양만 세운다
+var vertical := false
 
 
 ## add_child 전에 호출 (부모가 원점에 있다고 가정)
@@ -87,6 +89,11 @@ func _ready() -> void:
 	edge.position.y = 0.01
 	add_child(edge)
 
+	if vertical:
+		# 초승달을 진행 방향 축으로 90도 세우고, 바닥에 끌리지 않게 띄운다
+		for m in [body, edge]:
+			(m as Node3D).rotation.z = PI * 0.5
+			(m as Node3D).position.y += 0.4 * s
 	_spray = _make_spray(s)
 	add_child(_spray)
 	_splat_mesh = SphereMesh.new()

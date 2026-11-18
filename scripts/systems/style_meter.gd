@@ -5,6 +5,11 @@ extends CanvasLayer
 ## - 등급 6단계 (먹·붓 테마의 오리지널 이름): 점 → 획 → 필 → 묵 → 농묵 → 일필휘지
 ## - 화면 오른쪽 위: 큰 등급 글자 + 게이지 + 최근 행동 목록(+점수)
 ## 다른 스크립트는 그룹 "style_meter"를 통해 add()를 부른다.
+##
+## [디버그 모드] debug_lock_max가 켜져 있으면 F1 디버그 모드다:
+##   - 점수를 항상 최대로 붙잡아 등급이 '일필휘지'에 고정된다 (시간 감소·피격·재시작 모두 무시)
+##   - 글자로 된 HUD(이동 정보·조작 안내·행동 점수 목록)가 보인다. 꺼져 있으면 등급 글자와 게이지만 남는다
+## F1로 켜고 끈다. 다른 스크립트는 is_debug()로 확인한다.
 
 signal rank_changed(rank: int)
 
@@ -16,6 +21,8 @@ const FEED_LIFE := 2.5
 @export var decay_base := 20.0     # 초당 감소 (가장 낮은 등급)
 @export var decay_per_rank := 14.0 # 등급마다 추가 감소
 @export var damage_penalty := 300.0
+## 디버그: 일필휘지 고정. 출시 전에 false로 되돌린다
+@export var debug_lock_max := true
 
 var points := 0.0
 var best_rank := -1
@@ -27,10 +34,13 @@ var _rank_label: Label
 var _bar_bg: ColorRect
 var _bar_fill: ColorRect
 var _feed: VBoxContainer
+var _debug_label: Label
 
 
 func _ready() -> void:
 	layer = 20
+	if OS.has_feature("web"):
+		debug_lock_max = false   # 웹(깃헙 페이지)에서는 일반 플레이로 시작한다. F1로 켤 수 있다
 	add_to_group("style_meter")
 	_build_ui()
 	_update_ui()
@@ -63,12 +73,42 @@ func add(id: String, label: String, base_points: float) -> float:
 
 
 func on_damaged() -> void:
+	if debug_lock_max:
+		_push_feed("피격 (디버그: 고정)")
+		return
 	points = maxf(0.0, points - damage_penalty)
 	_push_feed("피격  -%d" % int(damage_penalty))
 	_update_ui()
 
 
+## F1 디버그 모드인가 (글자 HUD 표시 여부도 이것으로 정한다)
+func is_debug() -> bool:
+	return debug_lock_max
+
+
+## 등급을 최대(일필휘지)로 채운 점수
+func max_points() -> float:
+	return RANK_SIZE * RANKS.size() - 0.01
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("debug_max_style"):
+		debug_lock_max = not debug_lock_max
+		if not debug_lock_max:
+			points = 0.0
+		_push_feed("디버그: 일필휘지 고정 %s" % ("켬" if debug_lock_max else "끔"))
+		_update_ui()
+
+
 func _process(delta: float) -> void:
+	_debug_label.visible = debug_lock_max
+	_feed.visible = debug_lock_max  # 행동 점수 목록(글자)은 디버그 모드에서만
+	if debug_lock_max:
+		# 재시작(points = 0)이나 다른 코드가 점수를 바꿔도 다음 프레임에 다시 최대로
+		if points < max_points():
+			points = max_points()
+			_update_ui()
+		return
 	if points > 0.0:
 		var r := maxi(rank(), 0)
 		points = maxf(0.0, points - (decay_base + decay_per_rank * r) * delta)
@@ -163,3 +203,19 @@ func _build_ui() -> void:
 	_feed.alignment = BoxContainer.ALIGNMENT_BEGIN
 	_feed.add_theme_constant_override("separation", 2)
 	_root.add_child(_feed)
+
+	# 디버그 표시: 등급 고정 중임을 잊지 않게 (게이지와 따로, 항상 보이는 자리)
+	_debug_label = Label.new()
+	_debug_label.text = "DEBUG  일필휘지 고정 · 글자 HUD (F1)"
+	_debug_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_debug_label.offset_left = -200
+	_debug_label.offset_right = 200
+	_debug_label.offset_top = -64
+	_debug_label.offset_bottom = -40
+	_debug_label.add_theme_font_size_override("font_size", 16)
+	_debug_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_debug_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_debug_label.add_theme_constant_override("outline_size", 5)
+	_debug_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_debug_label)

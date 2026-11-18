@@ -116,6 +116,157 @@ func damage_number(pos: Vector3, damage: float, big: bool) -> void:
 	_pop_label(pos + jitter, str(int(round(damage))), 130 if big else 84, 0.6)
 
 
+# ---------------------------------------------------------------- 일필휘지 종베기
+
+const SPLIT_SHEET_SHADER := """
+shader_type spatial;
+render_mode unshaded, blend_add, cull_disabled, depth_draw_never, shadows_disabled;
+uniform float reveal = 0.0;   // 0~1: 플레이어 쪽에서 벽 쪽으로 갈라져 나간다
+uniform float fade = 1.0;
+uniform float length_m = 10.0;
+uniform float ramp_m = 14.0;  // 이 거리(m)에 걸쳐 낮게 시작해 최대 높이까지 치솟는다
+uniform float intensity = 1.0;
+void fragment() {
+	float along = UV.x;          // 0 = 시작(플레이어), 1 = 끝(벽)
+	float up = 1.0 - UV.y;       // 0 = 바닥, 1 = 꼭대기
+	float shown = 1.0 - smoothstep(reveal - 0.01, reveal + 0.01, along);
+	// 바닥에서 가장 밝고 위로 갈수록 옅어지는 빛의 막. 가르는 앞머리는 더 밝게 번쩍인다
+	float body = exp(-up * 2.6) * 1.6 + exp(-up * 0.7) * 0.25;
+	float head = exp(-abs(along - reveal) * length_m * 0.6) * (1.0 - step(1.0, reveal));
+	// 세로 결: 칼바람처럼 위로 솟는 가는 줄무늬
+	float streak = 0.75 + 0.25 * sin(along * length_m * 6.0 + TIME * 30.0);
+	float ends = smoothstep(0.0, 0.02, along) * (1.0 - smoothstep(0.97, 1.0, along));
+	// 칼끝 가까이는 낮고, 멀어질수록 높이 치솟는 쐐기 모양.
+	// 숄더뷰에서 막을 옆면으로 볼 때 가까운 부분이 캐릭터를 덮는 기둥이 되지 않고, 먼 곳은 소실점으로 모인다
+	float hmax = mix(0.1, 1.0, smoothstep(0.0, clamp(ramp_m / max(length_m, 0.01), 0.01, 1.0), along));
+	float top = 1.0 - smoothstep(hmax - 0.06, hmax, up);
+	// 쐐기 윗변을 따라 밝은 칼날 선
+	float rim_line = exp(-abs(up - hmax) * 40.0) * 0.8;
+	float a = shown * fade * ends * intensity * ((body * streak + head * 2.5 * exp(-up * 1.2)) * top + rim_line);
+	ALBEDO = vec3(1.0) * (1.0 + a * 2.0);
+	ALPHA = clamp(a, 0.0, 1.0);
+}
+"""
+
+var _split_shader: Shader
+
+## 일필휘지 획 긋기를 '종베기'로: 하늘에서 내려친 칼이 바닥을 따라 벽까지 맵을 가른다.
+##   - 빛의 막: 바닥에서 하늘로 치솟는 흰 빛의 벽이 플레이어 쪽에서 벽 쪽으로 순식간에 갈라져 나간다
+##   - 갈라진 바닥: 획을 따라 흰 빛을 내는 틈이 남았다가 식는다 (먹 획은 ink_trail이 그린다)
+##   - 솟구치는 파편: 갈라진 자리에서 먹방울과 흰 불티가 위로 터져 오른다
+## level 2(최대 차지)는 더 높고 굵고 오래 간다.
+## 빛의 막과 파편은 칼끝(플레이어 앞 NEAR_SKIP m)부터 시작한다. 숄더뷰처럼 카메라가 가르는 방향 바로 뒤에 있으면
+## 막을 옆면으로 보게 되는데, 플레이어 자리부터 막이 서 있으면 캐릭터를 덮는 흰 기둥이 되기 때문이다.
+const NEAR_SKIP := 2.5
+
+func map_split(from: Vector3, to: Vector3, level: int) -> void:
+	var d := Vector3(to.x - from.x, 0.0, to.z - from.z)
+	var length := d.length()
+	if length < 0.5:
+		return
+	var dir := d / length
+	var big := level >= 2
+	var height := 16.0 if big else 10.0
+	# 카메라가 가르는 방향을 따라 보고 있으면(숄더뷰) 막을 거의 옆면으로 보게 된다.
+	# 높은 막은 화면을 세로로 덮는 빛기둥이 되므로, 그럴수록 낮고 옅게 깔아 바닥을 따라 지평선까지 달려가는 칼빛으로 보이게 한다
+	var intensity := 1.0
+	var cam := get_viewport().get_camera_3d()
+	if cam:
+		var fwd := -cam.global_basis.z
+		# 내려다보는 카메라(탑뷰, 55도)에서는 높은 막이 잘 보이므로 줄이지 않는다. 수평에 가까울수록(숄더뷰)만 줄인다
+		var level_cam := 1.0 - smoothstep(0.35, 0.6, -fwd.y)
+		var cf := Vector3(fwd.x, 0.0, fwd.z)
+		if cf.length() > 0.01:
+			var along_view := smoothstep(0.55, 0.9, absf(cf.normalized().dot(dir))) * level_cam
+			height = lerpf(height, 2.5, along_view)
+			intensity = lerpf(1.0, 0.6, along_view)
+	var root := Node3D.new()
+	add_child(root)
+	root.global_position = Vector3(from.x, from.y + 0.02, from.z)
+	root.look_at(root.global_position + dir, Vector3.UP)   # 로컬 -Z = 가르는 방향
+
+	# 빛의 막 (가르는 선을 따라 세운 판): 칼끝에서 벽까지
+	var skip := minf(NEAR_SKIP, length * 0.5)
+	var sheet_len := length - skip
+	if _split_shader == null:
+		_split_shader = Shader.new()
+		_split_shader.code = SPLIT_SHEET_SHADER
+	var sheet := MeshInstance3D.new()
+	var q := QuadMesh.new()
+	q.size = Vector2(sheet_len, height)
+	sheet.mesh = q
+	var mat := ShaderMaterial.new()
+	mat.shader = _split_shader
+	mat.set_shader_parameter("length_m", sheet_len)
+	mat.set_shader_parameter("intensity", intensity)
+	sheet.material_override = mat
+	sheet.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	sheet.rotation.y = PI * 0.5            # 판의 +X(UV.x 증가)가 로컬 -Z(가르는 방향)로
+	sheet.position = Vector3(0.0, height * 0.5, -skip - sheet_len * 0.5)
+	root.add_child(sheet)
+
+	# 갈라진 바닥: 획 가운데의 흰 틈
+	var crack := MeshInstance3D.new()
+	var cq := QuadMesh.new()
+	cq.size = Vector2(0.28 if big else 0.18, length)
+	crack.mesh = cq
+	var cmat := _glow_mat(8.0)
+	cmat.no_depth_test = true
+	cmat.render_priority = 3
+	crack.material_override = cmat
+	crack.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	crack.rotation.x = -PI * 0.5           # 바닥에 눕힌다 (판의 세로가 가르는 방향)
+	crack.position = Vector3(0.0, 0.04, 0.0)
+	crack.scale = Vector3(1.0, 0.0001, 1.0)
+	root.add_child(crack)
+
+	# 갈라져 나가는 속도: 실제 시간 기준이라 히트스톱 중에도 끝까지 가른다
+	var cut_time := 0.12 + length * 0.0012
+	var tw := root.create_tween()
+	tw.set_ignore_time_scale(true)
+	tw.tween_method(func(v: float):
+		mat.set_shader_parameter("reveal", v)
+		crack.scale = Vector3(1.0, maxf(v, 0.0001), 1.0)
+		crack.position.z = -length * 0.5 * v, 0.0, 1.0, cut_time).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	tw.tween_method(func(v: float): mat.set_shader_parameter("fade", v), 1.0, 0.0, 0.55 if big else 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(cmat, "albedo_color:a", 0.0, 1.4 if big else 1.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_callback(root.queue_free)
+
+	# 솟구치는 먹방울 + 흰 불티 (선을 따라 고르게)
+	var drops := clampi(int(length * (2.2 if big else 1.4)), 20, 160)
+	for white in [false, true]:
+		var p := CPUParticles3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.05, 0.35, 0.05) if white else Vector3(0.12, 0.12, 0.12)
+		p.mesh = bm
+		if white:
+			p.material_override = _glow_mat(6.0)
+			p.particle_flag_align_y = true
+		else:
+			var im := StandardMaterial3D.new()
+			im.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			im.albedo_color = INK
+			p.material_override = im
+		p.one_shot = true
+		p.explosiveness = 0.85
+		p.amount = drops if not white else drops / 2
+		p.lifetime = 0.9
+		p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+		p.emission_box_extents = Vector3(0.2, 0.05, sheet_len * 0.5)
+		p.direction = Vector3.UP
+		p.spread = 22.0
+		p.initial_velocity_min = 10.0 if white else 6.0
+		p.initial_velocity_max = (14.0 if big else 10.0) + (8.0 if white else 0.0)
+		p.gravity = Vector3(0, -26, 0)
+		p.scale_amount_min = 0.5
+		p.scale_amount_max = 1.6
+		p.scale_amount_curve = _shrink_curve(0.5)
+		p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(p)
+		p.position = Vector3(0.0, 0.1, -skip - sheet_len * 0.5)
+		p.emitting = true
+
+
 # ---------------------------------------------------------------- 조각들
 
 var _spike_mesh: ArrayMesh

@@ -19,6 +19,7 @@ static func ensure_actions() -> void:
 	_add_keys("attack", [KEY_J])
 	_add_keys("toggle_camera", [KEY_V])
 	_add_keys("restart", [KEY_R])
+	_add_keys("debug_max_style", [KEY_F1])  # 디버그: 일필휘지 고정 켜기/끄기 (style_meter.gd)
 
 	_add_joy_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
 	_add_joy_axis("move_right", JOY_AXIS_LEFT_X, 1.0)

@@ -71,10 +71,10 @@ func _ready() -> void:
 	player.respawned.connect(_reset)
 	var sword: Node = player.get("sword")
 	sword.swung.connect(_on_swung)
+	# 종베기: 몸을 비틀지 않고 앞으로 크게 숙이며 내리꽂는다
 	sword.stroke_struck.connect(func(_from, _to, level: int):
-		_twist.y += -float(sword.get("_swing_dir")) * (10.0 + 3.0 * level)
-		_lean_x.y -= 5.0 + 2.0 * level
-		_kick_squash(-0.3 - 0.1 * level))
+		_lean_x.y -= 9.0 + 3.0 * level
+		_kick_squash(-0.4 - 0.12 * level))
 
 
 func _reset() -> void:

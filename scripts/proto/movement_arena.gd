@@ -1,15 +1,19 @@
 extends Node3D
-## 1~2단계 프로토타입: 회색 박스 아레나 + 사격형·돌격형 적과 패링 (GDD 10.2).
+## 1~2단계 프로토타입: 수묵담채 아레나 + 사격형·돌격형 적과 패링 (GDD 10.2).
 ## 아레나·플레이어·카메라·HUD를 코드로 만든다. V 키로 탑뷰/숄더뷰를 바꿔 두 시점을 비교한다.
+## 생김새(바닥·벽·하늘·먼 산)는 arena_look.gd.
 ##
 ## 좌표: +X 동쪽, -Z 북쪽(탑뷰 화면 위쪽). 카메라는 남쪽에서 내려다본다.
-## 바닥 120 × 120 m. 구역:
+## 바닥 160 × 160 m. 구역:
 ##   - 시작 지점: 남쪽 중앙
-##   - 슬라이드 레인: 남서쪽의 긴 통로 (60 m)
-##   - 계단 블록: 중앙 북쪽 (1.8 → 3.5 → 5 m)
-##   - 벽 점프 굴뚝 A: 북동쪽, 위층 발판 4.5 m
+##   - 슬라이드 레인: 남서쪽의 긴 통로 (70 m)
+##   - 중앙 광장: 1 m 높이의 넓은 단. 둘레에 탈 수 있는 기둥 8개가 원을 이룬다 (반경 32 m)
+##   - 계단 블록: 북쪽 (1.8 → 3.5 → 5 m), 꼭대기에서 동쪽으로 5 m 높이 다리가 굴뚝 A 쪽까지 이어진다
+##   - 벽 점프 굴뚝 A: 북동쪽, 위층 발판 4.5 m (동쪽 외벽에 붙음)
 ##   - 벽 점프 굴뚝 B: 북서쪽(서쪽 외벽과 짝), 위층 발판 6 m
-##   - 기둥 4개: 벽 점프 연습용
+##   - 서쪽 중단 발판 (3 m), 동·서 들판의 높은 벽 점프 판(10 m)
+##   - 낮은 엄폐벽(1.4 m): 사격형의 사선을 끊어 숨고 돌아 들어가게
+##   - 슬라이드 점프 연습: 남동쪽의 낮은 단상 두 개
 
 const Player := preload("res://scripts/player/player_controller.gd")
 const TopDownRig := preload("res://scripts/camera/top_down_camera_rig.gd")
@@ -25,6 +29,7 @@ const ScreenFx := preload("res://scripts/fx/screen_fx.gd")
 const StyleMeter := preload("res://scripts/systems/style_meter.gd")
 const Sfx := preload("res://scripts/systems/sfx.gd")
 const PauseMenu := preload("res://scripts/ui/pause_menu.gd")
+const ArenaLook := preload("res://scripts/proto/arena_look.gd")
 
 ## 먹 끌어당김 (먹이 가득 찬 적에게 반사탄 적중, GDD 3.8)
 const PULL_RADIUS := 14.0      # 이 거리 안의 다른 적을 끌어당긴다
@@ -61,46 +66,65 @@ const STYLE := {
 	"kill": ["처치", 100.0],
 }
 
-const ARENA_HALF := 60.0  ## 바닥 한 변의 절반 (m)
-const SPAWN := Vector3(0, 0.1, 33)
-## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급)
-## 중앙·동쪽·굴뚝 A 위 발판(4.5 m)은 하급, 서쪽은 중급(패링 불가 탄 사용)
+const ARENA_HALF := 80.0  ## 바닥 한 변의 절반 (m)
+const SPAWN := Vector3(0, 0.1, 58)
+## 사격형 적 위치와 등급 (0 = 하급, 1 = 중급): 연습 모드용
 const ENEMY_SPOTS := [
-	[Vector3(0, 0, 0), 0],
-	[Vector3(-37.5, 0, -18), 1],
-	[Vector3(39, 0, -9), 0],
-	[Vector3(56, 4.5, -39), 0],
+	[Vector3(0, 1.0, 0), 0],          # 중앙 광장 위
+	[Vector3(-40, 3.0, -30), 1],      # 서쪽 중단 발판 (중급)
+	[Vector3(50, 0, -5), 0],
+	[Vector3(72, 4.5, -56), 0],       # 굴뚝 A 위 발판
 ]
 ## 돌격형 적 위치와 등급: 열린 바닥에 배치 (중급은 패링 불가 돌진을 섞는다)
 const RUSHER_SPOTS := [
-	[Vector3(12, 0.1, 9), 0],
-	[Vector3(-9, 0.1, -39), 0],
-	[Vector3(42, 0.1, 12), 1],
+	[Vector3(14, 0.1, 20), 0],
+	[Vector3(-12, 0.1, -50), 0],
+	[Vector3(40, 0.1, 15), 1],
 ]
 
 ## 웨이브 (GDD 7.1): 적이 웨이브로 나오고, 다 처치하면 다음 웨이브. 마지막 웨이브를 끝내면 클리어 평가.
-## 각 항목: [종류, 위치, 등급(0 하급 / 1 중급)]
+## 각 항목: [종류, 위치, 등급(0 하급 / 1 중급)]. 여기에 같은 비율로 2배를 자동으로 더 놓는다 (_extra_spawns)
 const WAVES := [
+	# 1웨이브: 하급만. 중앙 광장 위와 좌우에서 쏘고, 돌격형 셋이 파고든다
 	[
-		["shooter", Vector3(0, 0, 0), 0],
-		["shooter", Vector3(-20, 0, -10), 0],
-		["rusher", Vector3(12, 0.1, 9), 0],
+		["shooter", Vector3(0, 1.0, 0), 0],
+		["shooter", Vector3(-25, 0, -8), 0],
+		["shooter", Vector3(25, 0, -10), 0],
+		["rusher", Vector3(14, 0.1, 20), 0],
+		["rusher", Vector3(-12, 0.1, 22), 0],
+		["rusher", Vector3(0, 0.1, -20), 0],
 	],
+	# 2웨이브: 중급 사격형 등장. 서쪽 중단 발판(3 m)·굴뚝 A 발판(4.5 m)·다리(5 m) 위에서도 쏜다
 	[
-		["rusher", Vector3(-12, 0.1, 6), 0],
-		["rusher", Vector3(14, 0.1, -6), 0],
-		["shooter", Vector3(-37.5, 0, -18), 1],
-		["shooter", Vector3(56, 4.5, -39), 0],
+		["rusher", Vector3(-15, 0.1, 10), 0],
+		["rusher", Vector3(18, 0.1, -8), 0],
+		["rusher", Vector3(-30, 0.1, 40), 0],
+		["rusher", Vector3(35, 0.1, 38), 0],
+		["shooter", Vector3(-40, 3.0, -30), 1],
+		["shooter", Vector3(72, 4.5, -56), 0],
+		["shooter", Vector3(27, 5.0, -45), 0],
+		["shooter", Vector3(-10, 0, -62), 0],
 	],
+	# 3웨이브: 중급이 섞이고, 계단 꼭대기(5 m)·북서 발판(6 m) 위에서도 쏜다
 	[
-		["rusher", Vector3(0, 0.1, -10), 1],
-		["shooter", Vector3(39, 0, -9), 1],
-		["rusher", Vector3(-15, 0.1, 5), 0],
-		["rusher", Vector3(15, 0.1, 5), 0],
-		["shooter", Vector3(-25, 0, -30), 0],
+		["rusher", Vector3(0, 0.1, -25), 1],
+		["rusher", Vector3(40, 0.1, 45), 1],
+		["rusher", Vector3(-18, 0.1, 8), 0],
+		["rusher", Vector3(18, 0.1, 8), 0],
+		["rusher", Vector3(-40, 0.1, 45), 0],
+		["shooter", Vector3(50, 0, -5), 1],
+		["shooter", Vector3(-35, 0, -50), 0],
+		["shooter", Vector3(5, 5.0, -45), 0],
+		["shooter", Vector3(-70, 6.0, -72), 0],
+		["shooter", Vector3(40, 0, 15), 0],
 	],
 ]
 const WAVE_DELAY := 1.5  # 웨이브를 끝내고 다음 웨이브가 나오기까지 (초)
+## 적 수 배율: 손으로 놓은 WAVES 위에, 웨이브마다 (배율 - 1)배만큼 적을 자동으로 더 놓는다 (6/8/10 → 18/24/30)
+const WAVE_MULTIPLIER := 3
+const EXTRA_MIN_PLAYER_DIST := 14.0   # 플레이어와 이만큼은 떨어진 곳에만 놓는다
+const EXTRA_MIN_SPACING := 4.0        # 적끼리 최소 간격
+const EXTRA_AREA := 74.0              # 이 반폭(m) 안에서 고른다 (외벽 80 m 안쪽)
 
 ## false면 연습 모드(모든 적이 한꺼번에, 죽으면 부활). add_child 전에 정한다
 var wave_mode := true
@@ -131,18 +155,14 @@ var shoulder_rig: Node3D
 var hud: CanvasLayer
 var _use_shoulder := false
 
-var _mat_floor: StandardMaterial3D
-var _mat_wall: StandardMaterial3D
-var _mat_climb: StandardMaterial3D
-var _mat_platform: StandardMaterial3D
 
 
 func _ready() -> void:
 	add_to_group("combat_events")
 	InputSetup.ensure_actions()
 	_build_environment()
-	_build_materials()
 	_build_arena()
+	_bake_navigation()
 
 	player = Player.new()
 	player.position = SPAWN
@@ -253,7 +273,11 @@ func _restart_run() -> void:
 func _next_wave() -> void:
 	wave += 1
 	_wave_alive = 0
-	for entry in WAVES[wave - 1]:
+	var entries: Array = WAVES[wave - 1]
+	for entry in entries:
+		_spawn_enemy(entry[0], entry[1], entry[2], false)
+		_wave_alive += 1
+	for entry in _extra_spawns(wave, entries, entries.size() * (WAVE_MULTIPLIER - 1)):
 		_spawn_enemy(entry[0], entry[1], entry[2], false)
 		_wave_alive += 1
 	_show_banner("웨이브 %d / %d" % [wave, WAVES.size()])
@@ -272,6 +296,69 @@ func _on_wave_enemy_down() -> void:
 	get_tree().create_timer(WAVE_DELAY).timeout.connect(func():
 		if _run_id == this_run and not run_cleared:  # 그사이 재시작했으면 무시
 			_next_wave())
+
+
+## 웨이브에 더할 적을 자동으로 고른다. 손으로 놓은 구성과 같은 비율(사격형/돌격형, 중급 비율)을 따른다.
+## 자리는 아레나 안에서 무작위로 고르되, 물리 세계로 확인한다:
+##   - 발밑에 바닥이 있고(바닥 또는 발판 윗면), 몸이 들어갈 자리가 비어 있어야 한다 (벽·기둥·계단 속 금지)
+##   - 돌격형은 바닥(높이 0)에만 둔다 (발판 위에서 돌진하다 떨어지지 않게)
+##   - 플레이어와 EXTRA_MIN_PLAYER_DIST, 다른 적과 EXTRA_MIN_SPACING 이상 떨어진다
+## 웨이브 번호로 씨앗을 정해 다시 시작해도 같은 배치가 나온다 (디버깅·연습용)
+func _extra_spawns(wave_no: int, base: Array, count: int) -> Array:
+	var out := []
+	if count <= 0:
+		return out
+	var shooters := 0
+	var elites := 0
+	for e in base:
+		if e[0] == "shooter":
+			shooters += 1
+		if int(e[2]) == 1:
+			elites += 1
+	var shooter_ratio := float(shooters) / base.size()
+	var elite_ratio := float(elites) / base.size()
+	var taken: Array[Vector3] = []
+	for e in base:
+		taken.append(e[1])
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7919 * wave_no + 17
+	var space := get_world_3d().direct_space_state
+	var player_pos := player.global_position if player else SPAWN
+	var tries := 0
+	while out.size() < count and tries < count * 60:
+		tries += 1
+		var kind := "shooter" if rng.randf() < shooter_ratio else "rusher"
+		var tier := 1 if rng.randf() < elite_ratio else 0
+		var xz := Vector3(rng.randf_range(-EXTRA_AREA, EXTRA_AREA), 0.0, rng.randf_range(-EXTRA_AREA, EXTRA_AREA))
+		# 위에서 아래로 쏴서 그 자리의 바닥(또는 발판 윗면) 높이를 찾는다
+		var q := PhysicsRayQueryParameters3D.create(xz + Vector3.UP * 20.0, xz + Vector3.DOWN * 5.0)
+		var hit := space.intersect_ray(q)
+		if hit.is_empty() or (hit["normal"] as Vector3).y < 0.9:
+			continue
+		var ground: Vector3 = hit["position"]
+		if kind == "rusher" and ground.y > 0.5:
+			continue
+		var pos := Vector3(xz.x, ground.y + (0.1 if kind == "rusher" else 0.0), xz.z)
+		if Vector2(pos.x - player_pos.x, pos.z - player_pos.z).length() < EXTRA_MIN_PLAYER_DIST:
+			continue
+		var crowded := false
+		for t in taken:
+			if Vector2(pos.x - t.x, pos.z - t.z).length() < EXTRA_MIN_SPACING:
+				crowded = true
+				break
+		if crowded:
+			continue
+		# 몸이 들어갈 자리가 비어 있는가 (가장 큰 적 몸통 크기로 확인)
+		var box := BoxShape3D.new()
+		box.size = Vector3(1.8, 2.6, 1.8)
+		var sq := PhysicsShapeQueryParameters3D.new()
+		sq.shape = box
+		sq.transform = Transform3D(Basis.IDENTITY, pos + Vector3.UP * 1.5)
+		if not space.intersect_shape(sq, 1).is_empty():
+			continue
+		taken.append(pos)
+		out.append([kind, pos, tier])
+	return out
 
 
 ## 클리어 평가 (GDD 5.2): 클리어 시간, 최고 먹 스타일 등급, 피격 횟수
@@ -405,19 +492,38 @@ func _on_ink_burst(enemy: Node, bonus: float, _killed: bool) -> void:
 	_feedback(0.4, 0.0)
 
 
-## 일필휘지 차지 획 긋기: 바닥을 가르는 한 획. 최대 차지는 가장 큰 순간으로 연출
+## 일필휘지 차지 획 긋기 = 종베기: 하늘에서 내려친 칼이 벽까지 맵을 반으로 가른다.
+## 세상(빛의 막·갈라진 바닥·파편)과 화면(두 쪽으로 벌어졌다 붙는다)을 함께 가른다
 func _on_stroke_struck(from: Vector3, to: Vector3, level: int) -> void:
-	var mid := from.lerp(to, 0.5) + Vector3.UP
-	sfx.call("play", "stroke_big" if level >= 2 else "stroke")
-	if level >= 2:
-		fx.call("hitstop", 0.08)
+	var big := level >= 2
+	sfx.call("play", "stroke_big" if big else "stroke")
+	hit_fx.call("map_split", from, to, level)
+	var cam := get_viewport().get_camera_3d()
+	var size := get_viewport().get_visible_rect().size
+	var px := size * 0.5
+	if cam:
+		# 가른 선을 화면에 옮겨 그 선을 따라 화면을 가른다.
+		# 선 위의 멀리 떨어진 두 점으로 방향을 잡아야 숄더뷰(카메라가 선 바로 뒤)에서도 소실점 쪽으로 곧게 갈라진다
+		var flat := Vector3(to.x - from.x, 0.0, to.z - from.z)
+		var length := flat.length()
+		if length > 0.5:
+			var dir := flat / length
+			var p1 := from + dir * minf(3.0, length * 0.3) + Vector3.UP * 0.5
+			var p2 := from + dir * minf(30.0, length) + Vector3.UP * 0.5
+			if not cam.is_position_behind(p1) and not cam.is_position_behind(p2):
+				var a := cam.unproject_position(p1)
+				var b := cam.unproject_position(p2)
+				if a.distance_to(b) > 4.0:
+					px = a
+					screen_fx.call("split", a, (b - a).normalized(), 30.0 if big else 18.0)
+	screen_fx.call("zoom_blur", 0.12 if big else 0.06, px / size)
+	if big:
+		fx.call("hitstop", 0.1)
 		fx.call("impact_frame", "stroke", 2, false)
-		_big_moment(mid, 0.12, -7.0, 160.0)
-		_feedback(0.5, 0.0)
+		_feedback(0.7, -8.0)
 	else:
-		fx.call("hitstop", 0.04)
-		_big_moment(mid, 0.06, -4.0, 110.0)
-		_feedback(0.25, 0.0)
+		fx.call("hitstop", 0.05)
+		_feedback(0.4, -5.0)
 
 
 ## 먹 도형: 슬라이드 먹 획으로 닫힌 도형을 그렸다. 안에 적이 많을수록 점수가 크다
@@ -588,107 +694,109 @@ func _set_camera_mode(shoulder: bool) -> void:
 # ---------------------------------------------------------------- 환경
 
 func _build_environment() -> void:
-	var env := Environment.new()
-	var sky := Sky.new()
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.32, 0.36, 0.45)
-	sky_mat.sky_horizon_color = Color(0.6, 0.62, 0.66)
-	sky_mat.ground_horizon_color = Color(0.6, 0.62, 0.66)
-	sky.sky_material = sky_mat
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.8
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	# 블룸: 밝기 1을 넘는 발광(탄, 적의 눈, 패링 부채꼴)만 번지게 (GDD 9.1)
-	env.glow_enabled = true
-	env.glow_hdr_threshold = 1.0
-	env.glow_intensity = 1.0
-	env.glow_bloom = 0.05
-	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
 	var world_env := WorldEnvironment.new()
-	world_env.environment = env
+	world_env.environment = ArenaLook.environment()
 	add_child(world_env)
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -35, 0)
-	sun.light_energy = 1.1
+	sun.light_energy = 1.05
+	sun.light_color = Color(1.0, 0.97, 0.9)
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 130.0
+	sun.directional_shadow_max_distance = 180.0
 	add_child(sun)
 
-
-func _build_materials() -> void:
-	_mat_floor = _checker(Color(0.34, 0.34, 0.36), Color(0.29, 0.29, 0.31), 0.25)
-	_mat_wall = _checker(Color(0.52, 0.52, 0.55), Color(0.47, 0.47, 0.5), 0.5)
-	# 탈 수 있는 벽 표시용 (GDD 3.3): 푸른빛 줄무늬 느낌
-	_mat_climb = _checker(Color(0.36, 0.46, 0.62), Color(0.28, 0.36, 0.5), 1.0)
-	_mat_platform = _checker(Color(0.58, 0.54, 0.47), Color(0.52, 0.48, 0.42), 0.5)
-
-
-## 2×2 체커 텍스처를 월드 좌표 기준(트라이플래너)으로 입힌다. 칸 크기 = 0.5 / scale m.
-func _checker(c1: Color, c2: Color, scale: float) -> StandardMaterial3D:
-	var img := Image.create(2, 2, false, Image.FORMAT_RGB8)
-	img.set_pixel(0, 0, c1)
-	img.set_pixel(1, 1, c1)
-	img.set_pixel(1, 0, c2)
-	img.set_pixel(0, 1, c2)
-	var m := StandardMaterial3D.new()
-	m.albedo_texture = ImageTexture.create_from_image(img)
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	m.uv1_triplanar = true
-	m.uv1_world_triplanar = true
-	m.uv1_scale = Vector3.ONE * scale
-	m.roughness = 0.9
-	return m
+	ArenaLook.add_mountains(self, ARENA_HALF)
 
 
 # ---------------------------------------------------------------- 아레나
 
 func _build_arena() -> void:
 	var h := ARENA_HALF
-	# 바닥 120 × 120 m (윗면 y = 0)
-	_box(Vector3(0, -0.5, 0), Vector3(h * 2.0, 1, h * 2.0), _mat_floor)
+	# 바닥 160 × 160 m (윗면 y = 0): 화선지 + 붓 격자
+	_box(Vector3(0, -0.5, 0), Vector3(h * 2.0, 1, h * 2.0), "floor")
 
 	# 외벽: 카메라 쪽(남쪽)은 낮게 해서 시야를 가리지 않는다 (GDD 7.3)
-	_block(0, -h - 0.5, h * 2.0 + 2.0, 1, 10, _mat_wall)      # 북
-	_block(-h - 0.5, 0, 1, h * 2.0, 10, _mat_climb)           # 서 (굴뚝 B의 한쪽 벽)
-	_block(h + 0.5, 0, 1, h * 2.0, 10, _mat_wall)             # 동
-	_block(0, h + 0.5, h * 2.0 + 2.0, 1, 1.2, _mat_wall)      # 남 (낮은 벽)
+	_block(0, -h - 0.5, h * 2.0 + 2.0, 1, 12, "wall")         # 북
+	_block(-h - 0.5, 0, 1, h * 2.0, 12, "climb")              # 서 (굴뚝 B의 한쪽 벽)
+	_block(h + 0.5, 0, 1, h * 2.0, 12, "wall")                # 동
+	_block(0, h + 0.5, h * 2.0 + 2.0, 1, 1.2, "wall")         # 남 (낮은 벽)
 
-	# 슬라이드 레인: 폭 3 m, 길이 60 m의 낮은 벽 통로
-	_block(-24, 49.5, 60, 1, 1.2, _mat_wall)
-	_block(-24, 53.5, 60, 1, 1.2, _mat_wall)
+	# 슬라이드 레인: 폭 3 m, 길이 70 m의 낮은 벽 통로 (남서)
+	_block(-40, 66, 70, 1, 1.2, "wall")
+	_block(-40, 70, 70, 1, 1.2, "wall")
 
-	# 계단 블록: 점프 한 번(2.5 m)으로 한 칸씩 오른다
-	_block(-4, -30, 4, 4, 1.8, _mat_platform)
-	_block(0, -30, 4, 4, 3.5, _mat_platform)
-	_block(5, -30, 6, 6, 5.0, _mat_platform)
+	# 중앙 광장: 1 m 단 (점프 한 번으로 오른다)
+	_block(0, 0, 22, 22, 1.0, "platform")
+	# 광장 둘레의 탈 수 있는 기둥 8개 (반경 32 m)
+	for i in 8:
+		var a := TAU * (i + 0.5) / 8.0
+		_block(cos(a) * 32.0, sin(a) * 32.0, 2, 2, 9, "climb")
+
+	# 계단 블록 (북): 점프 한 번(2.5 m)으로 한 칸씩 오른다
+	_block(-4, -45, 4, 4, 1.8, "platform")
+	_block(0, -45, 4, 4, 3.5, "platform")
+	_block(5, -45, 6, 6, 5.0, "platform")
+	# 다리: 계단 꼭대기(5 m)에서 동쪽으로 굴뚝 A 근처까지
+	_block(27, -45, 38, 4, 5.0, "platform")
 
 	# 굴뚝 A (북동): 3.5 m 간격의 두 벽 사이를 벽 점프로 오른 뒤 동쪽 발판(4.5 m)으로
-	_block(44, -38, 12, 1, 12, _mat_climb)
-	_block(44, -33.5, 12, 1, 12, _mat_climb)
-	_block(h - 5.0, -36, 10, 14, 4.5, _mat_platform)
+	_block(56, -58, 12, 1, 12, "climb")
+	_block(56, -53.5, 12, 1, 12, "climb")
+	_block(72, -56, 16, 14, 4.5, "platform")
 
 	# 굴뚝 B (북서): 서쪽 외벽과 안쪽 벽 사이 3 m 틈을 올라 북쪽 발판(6 m)으로
-	_block(-h + 3.5, -40.5, 1, 13, 12, _mat_climb)
-	_block(-h + 5.0, -h + 7.0, 10, 12, 6, _mat_platform)
+	_block(-76.5, -55, 1, 16, 12, "climb")
+	_block(-70, -72, 20, 16, 6, "platform")
 
-	# 기둥: 벽 점프·우회 연습
-	for p in [Vector2(-22.5, -3), Vector2(22.5, -3), Vector2(-22.5, 18), Vector2(22.5, 18)]:
-		_block(p.x, p.y, 2, 2, 9, _mat_climb)
+	# 서쪽 중단 발판 (3 m)
+	_block(-40, -30, 10, 10, 3.0, "platform")
 
-	# 슬라이드 점프 연습: 4 m 간격의 낮은 단상 두 개
-	_block(34, 40, 8, 8, 1.0, _mat_platform)
-	_block(46, 40, 8, 8, 1.0, _mat_platform)
+	# 동·서 들판의 높은 벽 점프 판 (10 m)
+	_block(60, 25, 1, 14, 10, "climb")
+	_block(-60, 25, 1, 14, 10, "climb")
+
+	# 낮은 엄폐벽 (1.4 m): 사격형의 사선을 끊는다
+	for c in [Vector4(40, 5, 10, 1), Vector4(46, -12, 1, 10), Vector4(30, 25, 8, 1),
+			Vector4(-40, 5, 10, 1), Vector4(-46, -12, 1, 10), Vector4(-30, 25, 8, 1),
+			Vector4(-25, -60, 12, 1), Vector4(20, 48, 1, 8), Vector4(-15, 45, 8, 1)]:
+		_block(c.x, c.y, c.z, c.w, 1.4, "wall")
+
+	# 슬라이드 점프 연습: 4 m 간격의 낮은 단상 두 개 (남동)
+	_block(45, 58, 8, 8, 1.0, "platform")
+	_block(57, 58, 8, 8, 1.0, "platform")
 
 
-## 바닥(y=0)에 놓인 블록. (x, z)는 중심, h는 높이.
-func _block(x: float, z: float, sx: float, sz: float, h: float, mat: Material) -> void:
-	_box(Vector3(x, h * 0.5, z), Vector3(sx, h, sz), mat)
+## 적 길찾기용 내비게이션 메시: 아레나의 정적 지형(바닥·벽·발판)으로 시작할 때 한 번 굽는다.
+## 사격형이 벽·다리·엄폐물을 돌아서 다가가고, 발판 위 사격형은 그 발판(따로 떨어진 섬) 안에서만 움직인다.
+## 몸이 가장 큰 중급 사격형(1.6 m 폭, 2.8 m 키)에 맞춘다. 1.25 m까지의 턱은 적이 뛰어올라 지나간다
+const NAV_CELL := 0.4
+
+func _bake_navigation() -> void:
+	var nav_map := get_world_3d().navigation_map
+	NavigationServer3D.map_set_cell_size(nav_map, NAV_CELL)
+	var nm := NavigationMesh.new()
+	nm.cell_size = NAV_CELL
+	nm.cell_height = 0.25
+	nm.agent_radius = 1.2   # 칸 크기(0.4)의 배수
+	nm.agent_height = 3.0   # 칸 높이(0.25)의 배수
+	nm.agent_max_climb = 1.25   # 중앙 광장(1 m)·점프 단상은 뛰어올라 지나간다 (적의 _try_hop). 엄폐벽 1.4 m는 못 넘는다
+	nm.agent_max_slope = 30.0
+	nm.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
+	var src := NavigationMeshSourceGeometryData3D.new()
+	NavigationServer3D.parse_source_geometry_data(nm, src, self)
+	NavigationServer3D.bake_from_source_geometry_data(nm, src)
+	var region := NavigationRegion3D.new()
+	region.navigation_mesh = nm
+	add_child(region)
 
 
-func _box(center: Vector3, size: Vector3, mat: Material) -> void:
+## 바닥(y=0)에 놓인 블록. (x, z)는 중심, h는 높이. kind: "wall" / "climb" / "platform"
+func _block(x: float, z: float, sx: float, sz: float, h: float, kind: String) -> void:
+	_box(Vector3(x, h * 0.5, z), Vector3(sx, h, sz), kind)
+
+
+func _box(center: Vector3, size: Vector3, kind: String) -> void:
 	var body := StaticBody3D.new()
 	body.position = center
 	var shape := BoxShape3D.new()
@@ -700,6 +808,6 @@ func _box(center: Vector3, size: Vector3, mat: Material) -> void:
 	var bm := BoxMesh.new()
 	bm.size = size
 	mesh.mesh = bm
-	mesh.material_override = mat
+	mesh.material_override = ArenaLook.floor_material() if kind == "floor" else ArenaLook.block_material(size, kind)
 	body.add_child(mesh)
 	add_child(body)

@@ -45,9 +45,12 @@ const INK_STAGES := [
 ]
 const SPLIT_ANGLE_DEG := 14.0
 const RANK_CHARGE := 5
+## 일필휘지에서는 사거리가 무한: 획 긋기와 검기가 벽에 닿을 때까지 뻗는다 (아레나 대각선 170 m보다 길게)
+const INFINITE_RANGE := 400.0
 
 ## 일필휘지 차지 '획 긋기': 누르고 있다가 떼면 조준 방향으로 직선 먹 획을 한 번에 긋는다.
 ## 획에 닿은 적을 모두 베고(관통), 획은 바닥에 먹 자국으로 남아 먹 도형(ink_trail.gd)의 일부가 된다.
+## 사거리는 무한: 단계와 상관없이 벽에 닿을 때까지 긋는다 (단계는 굵기·피해·먹만 다르다).
 ## 차지 중에도 이동할 수 있지만 패링은 못 한다. 짧게 누르면 보통 휘두르기.
 ## [최소 차지 시간, 획 길이, 획 굵기(배율), 피해, 묻는 먹(-1 = 가득)]
 const CHARGE_LEVELS := [
@@ -175,7 +178,7 @@ func _update_charge(delta: float) -> void:
 ## 차지 획 긋기
 func _strike(level: int) -> void:
 	var cfg: Array = CHARGE_LEVELS[level - 1]
-	var length: float = cfg[1]
+	var length: float = INFINITE_RANGE  # 일필휘지: 벽에 닿을 때까지 (cfg[1]은 예전 길이, 참고용)
 	var width_mul: float = cfg[2]
 	var dmg: float = cfg[3]
 	var ink_amount: float = cfg[4]
@@ -222,15 +225,14 @@ func _strike(level: int) -> void:
 	if trail:
 		trail.call("draw_line", feet, to, width_mul)
 
-	# 칼날: 크게 한 번 내리긋기
-	_swing_dir = -_swing_dir
-	var from := deg_to_rad(90.0) * _swing_dir
-	_pivot.rotation.y = from
+	# 칼날: 머리 위로 치켜들었다가 앞으로 내려친다 (종베기). 끝나면 평소 자세로
+	_pivot.rotation = Vector3(deg_to_rad(110.0), 0.0, 0.0)
 	var tw := _pivot.create_tween()
-	tw.tween_property(_pivot, "rotation:y", -from, SWING_TIME * 0.8)
-	tw.tween_property(_pivot, "rotation:y", deg_to_rad(-35.0), 0.25).set_delay(0.08)
+	tw.tween_property(_pivot, "rotation:x", deg_to_rad(-65.0), SWING_TIME * 0.7).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+	tw.tween_interval(0.12)
+	tw.tween_property(_pivot, "rotation", Vector3(0.0, deg_to_rad(-35.0), 0.0), 0.25)
 	_blade_glow = 14.0
-	_tip_glints(-from, melee_range, true)
+	_tip_glints(0.0, melee_range, true)
 	stroke_struck.emit(feet, to, level)
 
 
@@ -320,7 +322,8 @@ func _launch_wave(finisher: bool, already_hit: Array) -> void:
 		var off := 0.0 if k == 0 else SPLIT_ANGLE_DEG * (1.0 if k == 1 else -1.0)
 		var side := k > 0
 		var w := SwordWave.new()
-		w.setup(origin, center_dir.rotated(Vector3.UP, deg_to_rad(off)), wave_speed, wave_range * range_mul,
+		w.vertical = rank >= RANK_CHARGE   # 일필휘지: 세로로 선 초승달 (종베기 검기)
+		w.setup(origin, center_dir.rotated(Vector3.UP, deg_to_rad(off)), wave_speed, _wave_reach() * range_mul,
 			base_dmg * (0.5 if side else 1.0), finisher, player, already_hit,
 			size_mul * (0.7 if side else 1.0))
 		w.hit_enemy.connect(_on_wave_hit.bind(kind, base_ink * (0.5 if side else 1.0)))
@@ -339,11 +342,16 @@ func _aim() -> Vector3:
 	return Vector3(f.x, 0.0, f.z).normalized()
 
 
+## 검기 사거리: 일필휘지면 무한(벽에 닿을 때까지)
+func _wave_reach() -> float:
+	return INFINITE_RANGE if rank >= RANK_CHARGE else wave_range
+
+
 ## 조준 방향 근처(보정 각도 안)에 적이 있으면 가장 가까운 적의 몸통을 향한다 (높이 차 포함)
 func _assisted_direction(from: Vector3) -> Vector3:
 	var aim := _aim()
 	var best := aim
-	var best_dist := wave_range
+	var best_dist := _wave_reach()
 	for e in get_tree().get_nodes_in_group("enemy"):
 		var to: Vector3 = e.call("aim_point") - from
 		var flat := Vector3(to.x, 0.0, to.z)

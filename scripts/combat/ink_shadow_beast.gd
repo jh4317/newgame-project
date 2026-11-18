@@ -94,6 +94,11 @@ var _time := 0.0
 var _flinch := 0.0
 var _roar := 0.0
 var _seed := 0.0
+## 붓 획(촉수·갈기) 다시 그리기 주기: 화면 밖이거나 멀면 드물게 (적이 30마리일 때 프레임 유지)
+var _stroke_timer := 0.0
+const STROKE_NEAR_DIST := 30.0   # 이보다 가까우면 매 프레임
+const STROKE_FAR_INTERVAL := 1.0 / 20.0
+const STROKE_OFFSCREEN_INTERVAL := 0.5
 
 var _pool: MeshInstance3D
 var _pool_mat: ShaderMaterial
@@ -167,14 +172,28 @@ func follow(delta: float, ground: Vector3, size_scale: float, ink_ratio: float, 
 	_wisps.speed_scale = lerpf(0.6, 1.3, wake)
 	_wisps.emission_sphere_radius = pool_r * 0.7 * size_scale
 
+	# ---- 붓 획을 이번 프레임에 다시 그릴까: 가까우면 매 프레임, 멀면 초당 20번, 화면 밖이면 초당 2번
+	_stroke_timer -= delta
+	var redraw := true
+	if cam:
+		var interval := 0.0
+		if not cam.is_position_in_frustum(global_position + Vector3.UP):
+			interval = STROKE_OFFSCREEN_INTERVAL
+		elif cam.global_position.distance_to(global_position) > STROKE_NEAR_DIST:
+			interval = STROKE_FAR_INTERVAL
+		redraw = _stroke_timer <= 0.0
+		if redraw:
+			_stroke_timer = interval
+
 	# ---- 촉수: 바닥을 휘감는 붓 획
 	var reach := smoothstep(0.15, 1.0, wake)
-	_tendril_mesh.clear_surfaces()
-	if reach > 0.02:
-		_tendril_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, _brush_mat)
-		for i in TENDRILS:
-			_ground_stroke(i, pool_r, reach)
-		_tendril_mesh.surface_end()
+	if redraw:
+		_tendril_mesh.clear_surfaces()
+		if reach > 0.02:
+			_tendril_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, _brush_mat)
+			for i in TENDRILS:
+				_ground_stroke(i, pool_r, reach)
+			_tendril_mesh.surface_end()
 
 	# ---- 머리: 두 단계로 솟는다 (먹 ~60%에서 눈만, ~85%부터 전체)
 	var rise := lerpf(-1.0, -0.15, smoothstep(0.35, 0.6, wake)) + lerpf(0.0, 0.7, smoothstep(0.65, 1.0, wake)) - 0.5 * _flinch
@@ -194,6 +213,8 @@ func follow(delta: float, ground: Vector3, size_scale: float, ink_ratio: float, 
 		h.scale = Vector3.ONE * (0.9 + 0.5 * _roar + 0.08 * sin(_time * 3.0))
 
 	# ---- 갈기: 머리 뒤로 날리는 붓 획 (카메라를 향하는 띠)
+	if not redraw:
+		return
 	_mane_mesh.clear_surfaces()
 	var mane_amt := smoothstep(0.55, 1.0, wake)
 	if _head.visible and mane_amt > 0.02 and cam:
@@ -253,15 +274,24 @@ func _ribbon(im: ImmediateMesh, pts: PackedVector3Array, widths: PackedFloat32Ar
 		side = side.normalized() if side.length() > 0.001 else Vector3.RIGHT
 		left.append(pts[k] - side * widths[k] * 0.5)
 		right.append(pts[k] + side * widths[k] * 0.5)
+	# 삼각형 두 개씩 바로 쓴다 (임시 배열을 만들지 않는다: 적이 많을 때 프레임 유지)
+	var uv2 := Vector2(stroke_seed, 0.0)
+	var inv := 1.0 / (n - 1)
 	for k in n - 1:
-		var v0 := float(k) / (n - 1)
-		var v1 := float(k + 1) / (n - 1)
-		var quad := [[left[k], Vector2(0, v0)], [right[k], Vector2(1, v0)], [right[k + 1], Vector2(1, v1)],
-			[left[k], Vector2(0, v0)], [right[k + 1], Vector2(1, v1)], [left[k + 1], Vector2(0, v1)]]
-		for q in quad:
-			im.surface_set_uv(q[1])
-			im.surface_set_uv2(Vector2(stroke_seed, 0.0))
-			im.surface_add_vertex(q[0])
+		var v0 := k * inv
+		var v1 := (k + 1) * inv
+		_vtx(im, left[k], Vector2(0, v0), uv2)
+		_vtx(im, right[k], Vector2(1, v0), uv2)
+		_vtx(im, right[k + 1], Vector2(1, v1), uv2)
+		_vtx(im, left[k], Vector2(0, v0), uv2)
+		_vtx(im, right[k + 1], Vector2(1, v1), uv2)
+		_vtx(im, left[k + 1], Vector2(0, v1), uv2)
+
+
+func _vtx(im: ImmediateMesh, p: Vector3, uv: Vector2, uv2: Vector2) -> void:
+	im.surface_set_uv(uv)
+	im.surface_set_uv2(uv2)
+	im.surface_add_vertex(p)
 
 
 # ---------------------------------------------------------------- 조립
