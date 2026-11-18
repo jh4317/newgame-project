@@ -1,3 +1,9 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# 플레이쓰루 녹화 영상 (tools/record_playthrough.gd)
+recordings/
+
+# 웹 내보내기 결과 (깃헙 액션이 만든다)
+build/
