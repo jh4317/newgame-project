@@ -23,6 +23,10 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
+[gui]
+
+theme/custom_font="res://assets/fonts/noto_sans_kr_ui.tres"
+
 [physics]
 
 common/physics_ticks_per_second=120
