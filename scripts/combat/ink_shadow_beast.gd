@@ -371,6 +371,7 @@ func _particles(size: Vector2, mat: Material, amount: int, life: float, colors: 
 	p.direction = Vector3.UP
 	p.emitting = false
 	p.local_coords = false
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(p)
 	return p
 
@@ -409,41 +410,15 @@ func _build_head() -> void:
 	hs.scale = Vector3.ONE * 1.45
 	_head.add_child(hs)
 
-	# 두개골: 뒤가 넓고 주둥이로 갈수록 좁아지는 사각뿔대들
-	_add(hs, _taper(Vector2(0.46, 0.36), Vector2(0.36, 0.3), 0.42), _body_mat, Vector3(0, 0.0, 0.2))
-	_add(hs, _taper(Vector2(0.34, 0.24), Vector2(0.15, 0.12), 0.5), _body_mat, Vector3(0, -0.02, -0.2), Vector3(0.12, 0, 0))
-	# 눈두덩: 날카롭게 앞으로 튀어나온 이마 능선
-	for side in [-1.0, 1.0]:
-		_add(hs, _taper(Vector2(0.14, 0.06), Vector2(0.02, 0.02), 0.32), _body_mat, Vector3(0.13 * side, 0.15, -0.12), Vector3(-0.15, 0.25 * side, 0))
-	# 위턱 이빨 (바깥 송곳니가 길다)
-	for k in 6:
-		var x := -0.11 + k * 0.044
-		var tooth_len := 0.12 if k == 0 or k == 5 else 0.07
-		_add(hs, _spike(0.035, tooth_len), _eye_mat, Vector3(x, -0.1 - tooth_len * 0.4, -0.34 + absf(k - 2.5) * 0.035), Vector3(PI, 0, 0))
-	# 아래턱
+	# 두개골·뿔·이빨은 움직이지 않는 조각이라 모든 괴물이 같이 쓰는 메시 두 개(머리, 아래턱)로 합쳐 둔다.
+	# 조각마다 노드를 두면 괴물 하나에 그리기 호출이 스무 개가 넘어 적이 많을 때(특히 웹에서) 느려진다
+	if _head_mesh == null:
+		_build_head_meshes()
+	_merged(hs, _head_mesh)
 	_jaw = Node3D.new()
-	_jaw.position = Vector3(0, -0.12, 0.05)
+	_jaw.position = JAW_POS
 	hs.add_child(_jaw)
-	_add(_jaw, _taper(Vector2(0.3, 0.07), Vector2(0.12, 0.05), 0.55), _body_mat, Vector3(0, -0.02, -0.02))
-	for k in 5:
-		_add(_jaw, _spike(0.03, 0.08), _eye_mat, Vector3(-0.08 + k * 0.04, 0.03, -0.38 + absf(k - 2) * 0.04))
-	# 뿔: 세 마디로 뒤로 길게 휘어진다
-	for side in [-1.0, 1.0]:
-		var base := Node3D.new()
-		base.position = Vector3(0.17 * side, 0.17, 0.15)
-		base.rotation = Vector3(-0.5, 0.0, -0.35 * side)
-		hs.add_child(base)
-		var parent := base
-		var w := 0.1
-		for seg in 3:
-			_add(parent, _taper(Vector2(w, w), Vector2(w * 0.7, w * 0.7), 0.26), _body_mat, Vector3.ZERO, Vector3(-PI * 0.5, 0, 0))
-			var nxt := Node3D.new()
-			nxt.position = Vector3(0, 0.26, 0)
-			nxt.rotation = Vector3(-0.45, 0.0, 0.05 * side)
-			parent.add_child(nxt)
-			parent = nxt
-			w *= 0.7
-		_add(parent, _spike(w, 0.22), _body_mat, Vector3(0, 0.1, 0))
+	_merged(_jaw, _jaw_mesh)
 	# 눈: 위로 째진 흰 눈 + 부드러운 빛무리
 	for side in [-1.0, 1.0]:
 		var eye := Node3D.new()
@@ -481,9 +456,15 @@ func _add(parent: Node3D, mesh: Mesh, mat: Material, pos := Vector3.ZERO, rot :=
 	return m
 
 
+## 셰이더는 모든 괴물이 같이 쓴다: 괴물마다 새로 만들면 적이 나올 때마다 셰이더를 다시 컴파일해
+## 웹(WebGL)에서 크게 멈칫한다. 재질(매개변수)만 괴물마다 따로 둔다
+static var _shaders := {}
 func _shader_mat(code: String) -> ShaderMaterial:
-	var sh := Shader.new()
-	sh.code = code
+	var sh: Shader = _shaders.get(code)
+	if sh == null:
+		sh = Shader.new()
+		sh.code = code
+		_shaders[code] = sh
 	var m := ShaderMaterial.new()
 	m.shader = sh
 	return m
@@ -509,7 +490,7 @@ static func _soft_dot() -> Texture2D:
 	return t
 
 
-func _spike(w: float, h: float) -> Mesh:
+static func _spike(w: float, h: float) -> Mesh:
 	var c := CylinderMesh.new()
 	c.top_radius = 0.0
 	c.bottom_radius = w * 0.5
@@ -520,7 +501,7 @@ func _spike(w: float, h: float) -> Mesh:
 
 
 ## 사각뿔대: 뒤(z=0)에서 back 크기 → 앞(z=-length)에서 front 크기. 면마다 각진 법선
-func _taper(back: Vector2, front: Vector2, length: float) -> ArrayMesh:
+static func _taper(back: Vector2, front: Vector2, length: float) -> ArrayMesh:
 	var b := [Vector3(-back.x, -back.y, 0) * 0.5, Vector3(back.x, -back.y, 0) * 0.5,
 		Vector3(back.x, back.y, 0) * 0.5, Vector3(-back.x, back.y, 0) * 0.5]
 	var f := [Vector3(-front.x * 0.5, -front.y * 0.5, -length), Vector3(front.x * 0.5, -front.y * 0.5, -length),
@@ -555,3 +536,84 @@ func _taper(back: Vector2, front: Vector2, length: float) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return mesh
+
+
+# ---------------------------------------------------------------- 머리 메시 (모든 괴물이 같이 쓴다)
+
+const JAW_POS := Vector3(0, -0.12, 0.05)
+static var _head_mesh: ArrayMesh   # 면 0: 윤이 나는 먹(몸), 면 1: 흰 이빨
+static var _jaw_mesh: ArrayMesh
+
+
+static func _xf(pos: Vector3, rot := Vector3.ZERO) -> Transform3D:
+	return Transform3D(Basis.from_euler(rot), pos)
+
+
+static func _build_head_meshes() -> void:
+	var body: Array = []   # [메시, 변환] 쌍
+	var teeth: Array = []
+	# 두개골: 뒤가 넓고 주둥이로 갈수록 좁아지는 사각뿔대들
+	body.append([_taper(Vector2(0.46, 0.36), Vector2(0.36, 0.3), 0.42), _xf(Vector3(0, 0.0, 0.2))])
+	body.append([_taper(Vector2(0.34, 0.24), Vector2(0.15, 0.12), 0.5), _xf(Vector3(0, -0.02, -0.2), Vector3(0.12, 0, 0))])
+	# 눈두덩: 날카롭게 앞으로 튀어나온 이마 능선
+	for side in [-1.0, 1.0]:
+		body.append([_taper(Vector2(0.14, 0.06), Vector2(0.02, 0.02), 0.32), _xf(Vector3(0.13 * side, 0.15, -0.12), Vector3(-0.15, 0.25 * side, 0))])
+	# 위턱 이빨 (바깥 송곳니가 길다)
+	for k in 6:
+		var x := -0.11 + k * 0.044
+		var tooth_len := 0.12 if k == 0 or k == 5 else 0.07
+		teeth.append([_spike(0.035, tooth_len), _xf(Vector3(x, -0.1 - tooth_len * 0.4, -0.34 + absf(k - 2.5) * 0.035), Vector3(PI, 0, 0))])
+	# 뿔: 세 마디로 뒤로 길게 휘어진다
+	for side in [-1.0, 1.0]:
+		var acc := _xf(Vector3(0.17 * side, 0.17, 0.15), Vector3(-0.5, 0.0, -0.35 * side))
+		var w := 0.1
+		for seg in 3:
+			body.append([_taper(Vector2(w, w), Vector2(w * 0.7, w * 0.7), 0.26), acc * _xf(Vector3.ZERO, Vector3(-PI * 0.5, 0, 0))])
+			acc = acc * _xf(Vector3(0, 0.26, 0), Vector3(-0.45, 0.0, 0.05 * side))
+			w *= 0.7
+		body.append([_spike(w, 0.22), acc * _xf(Vector3(0, 0.1, 0))])
+	_head_mesh = ArrayMesh.new()
+	_add_merged_surface(_head_mesh, body)
+	_add_merged_surface(_head_mesh, teeth)
+
+	# 아래턱 (턱 관절 기준)
+	var jaw_teeth: Array = []
+	for k in 5:
+		jaw_teeth.append([_spike(0.03, 0.08), _xf(Vector3(-0.08 + k * 0.04, 0.03, -0.38 + absf(k - 2) * 0.04))])
+	_jaw_mesh = ArrayMesh.new()
+	_add_merged_surface(_jaw_mesh, [[_taper(Vector2(0.3, 0.07), Vector2(0.12, 0.05), 0.55), _xf(Vector3(0, -0.02, -0.02))]])
+	_add_merged_surface(_jaw_mesh, jaw_teeth)
+
+
+## [메시, 변환] 목록을 정점·법선만 남긴 삼각형 한 면으로 합친다 (인덱스는 풀어 쓴다)
+static func _add_merged_surface(target: ArrayMesh, parts: Array) -> void:
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	for part in parts:
+		var mesh: Mesh = part[0]
+		var xf: Transform3D = part[1]
+		var nb := xf.basis.inverse().transposed()
+		var arr := mesh.surface_get_arrays(0)
+		var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var n: PackedVector3Array = arr[Mesh.ARRAY_NORMAL]
+		var idx = arr[Mesh.ARRAY_INDEX]
+		var order: PackedInt32Array = idx if idx != null else PackedInt32Array(range(v.size()))
+		for i in order:
+			verts.append(xf * v[i])
+			norms.append((nb * n[i]).normalized())
+	var out := []
+	out.resize(Mesh.ARRAY_MAX)
+	out[Mesh.ARRAY_VERTEX] = verts
+	out[Mesh.ARRAY_NORMAL] = norms
+	target.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out)
+
+
+## 합친 머리 메시를 이 괴물의 재질로 단다 (면 0: 몸, 면 1: 이빨 = 눈 재질이라 함께 번쩍인다)
+func _merged(parent: Node3D, mesh: ArrayMesh) -> MeshInstance3D:
+	var m := MeshInstance3D.new()
+	m.mesh = mesh
+	m.set_surface_override_material(0, _body_mat)
+	m.set_surface_override_material(1, _eye_mat)
+	m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(m)
+	return m

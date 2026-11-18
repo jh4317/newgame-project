@@ -704,6 +704,10 @@ func _build_environment() -> void:
 	sun.light_color = Color(1.0, 0.97, 0.9)
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 180.0
+	if OS.has_feature("web"):
+		# 웹(WebGL)은 그리기 호출이 비싸다: 그림자 분할 4장을 2장으로, 거리도 줄여 그림자 패스를 가볍게
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		sun.directional_shadow_max_distance = 70.0
 	add_child(sun)
 
 	ArenaLook.add_mountains(self, ARENA_HALF)

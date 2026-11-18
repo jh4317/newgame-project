@@ -233,6 +233,7 @@ func _absorb(base: Node3D, count: int) -> void:
 	c.add_point(Vector2(1.0, 0.2))
 	p.scale_amount_curve = c
 	p.top_level = true
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # 먹 입자는 그림자를 드리우지 않는다 (그리기 호출 절약)
 	add_child(p)
 	p.global_position = base.global_position + Vector3.UP * body_size.y * 0.5
 	p.emitting = true
@@ -320,6 +321,7 @@ func _build_visuals() -> void:
 	_drips.gravity = Vector3(0, -12, 0)
 	_drips.position = Vector3.UP * body_height * 0.5
 	_drips.emitting = false
+	_drips.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # 먹 입자는 그림자를 드리우지 않는다 (그리기 호출 절약)
 	add_child(_drips)
 
 	# 검은 기운: 발밑 고리 모양으로 생겨나 소용돌이치며 위로 피어오르는 먹빛 불길
@@ -360,6 +362,7 @@ func _build_visuals() -> void:
 	_aura.scale_amount_curve = ac
 	_aura.position = Vector3.UP * body_height * 0.25
 	_aura.emitting = false
+	_aura.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # 먹 입자는 그림자를 드리우지 않는다 (그리기 호출 절약)
 	add_child(_aura)
 
 	# 흰 불티: 기준치 이상일 때만, 검은 기운 사이로 드문드문 빛난다 (블룸)
@@ -396,4 +399,5 @@ func _build_visuals() -> void:
 	_embers.scale_amount_curve = ec
 	_embers.position = Vector3.UP * body_height * 0.3
 	_embers.emitting = false
+	_embers.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # 먹 입자는 그림자를 드리우지 않는다 (그리기 호출 절약)
 	add_child(_embers)
